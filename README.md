@@ -1,2 +1,2 @@
 # otvet-database-backup
-Service repository for creating DB Backups for otvet.live.
+Free cloud compute resources must work!!!
