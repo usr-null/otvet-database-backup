@@ -55,11 +55,11 @@ cat > "$BACKUP_COMMAND" <<EOF
 set -eu
 
 IFS= read -r MYSQL_RUNTIME_PASSWORD
-MYSQL_RUNTIME_PASSWORD="${MYSQL_RUNTIME_PASSWORD%"$(printf '\r')"}"
+MYSQL_RUNTIME_PASSWORD="\$(printf '%s' "\$MYSQL_RUNTIME_PASSWORD" | tr -d '\r')"
 
 $MYSQLDUMP_CMD \\
   -u "$MYSQL_USER" \\
-  -p"$MYSQL_RUNTIME_PASSWORD" \\
+  -p"\$MYSQL_RUNTIME_PASSWORD" \\
   --single-transaction \\
   --routines \\
   --triggers \\
