@@ -16,12 +16,14 @@ set -eu
 : "${MYSQL_CHARSET:=utf8mb4}"
 : "${MYSQL_ADMIN_CMD:=mysql}"
 
+: "${PROCESS_COMMAND:=zstd -19}"
+
 sql_string() {
-  printf "%s" "$1" | sed "s/'/''/g"
+printf "%s" "$1" | sed "s/'/''/g"
 }
 
 sql_ident() {
-  printf "%s" "$1" | sed 's/`/``/g'
+printf "%s" "$1" | sed 's/`/``/g'
 }
 
 MYSQL_USER_SQL="$(sql_string "$MYSQL_USER")"
@@ -30,10 +32,10 @@ MYSQL_HOST_PATTERN_SQL="$(sql_string "$MYSQL_HOST_PATTERN")"
 DB_NAME_SQL="$(sql_ident "$DB_NAME")"
 
 if ! id "$BACKUP_USER" >/dev/null 2>&1; then
-  useradd -m -d "$BACKUP_HOME" -s /bin/sh "$BACKUP_USER"
+useradd -m -d "$BACKUP_HOME" -s /bin/sh "$BACKUP_USER"
 else
-  mkdir -p "$BACKUP_HOME"
-  usermod -d "$BACKUP_HOME" -s /bin/sh "$BACKUP_USER"
+mkdir -p "$BACKUP_HOME"
+usermod -d "$BACKUP_HOME" -s /bin/sh "$BACKUP_USER"
 fi
 
 chown "$BACKUP_USER:$BACKUP_USER" "$BACKUP_HOME"
@@ -51,25 +53,25 @@ chown "$BACKUP_USER:$BACKUP_USER" "$BACKUP_HOME/.ssh/authorized_keys"
 chmod 600 "$BACKUP_HOME/.ssh/authorized_keys"
 
 cat > "$BACKUP_COMMAND" <<EOF
-#!/bin/sh
-set -eu
+#!/bin/bash
+set -euo pipefail
 
 IFS= read -r MYSQL_RUNTIME_PASSWORD
-MYSQL_RUNTIME_PASSWORD="\$(printf '%s' "\$MYSQL_RUNTIME_PASSWORD" | tr -d '\r')"
+MYSQL_RUNTIME_PASSWORD="$(printf '%s' "$MYSQL_RUNTIME_PASSWORD" | tr -d '\r')"
 
-$MYSQLDUMP_CMD \\
-  -u "$MYSQL_USER" \\
-  -p"\$MYSQL_RUNTIME_PASSWORD" \\
-  --single-transaction \\
-  --set-gtid-purged=OFF \\
-  --routines \\
-  --triggers \\
-  --events \\
-  --hex-blob \\
-  --no-tablespaces \\
-  --default-character-set="$MYSQL_CHARSET" \\
-  --databases "$DB_NAME" \\
-| zstd -22 --ultra --long=31 \\
+$MYSQLDUMP_CMD \
+-u "$MYSQL_USER" \
+-p"$MYSQL_RUNTIME_PASSWORD" \
+--single-transaction \
+--set-gtid-purged=OFF \
+--routines \
+--triggers \
+--events \
+--hex-blob \
+--no-tablespaces \
+--default-character-set="$MYSQL_CHARSET" \
+--databases "$DB_NAME" \
+| $PROCESS_COMMAND \
 | age -r "$AGE_PUBLIC_KEY"
 EOF
 
@@ -81,7 +83,7 @@ CREATE USER IF NOT EXISTS '$MYSQL_USER_SQL'@'$MYSQL_HOST_PATTERN_SQL' IDENTIFIED
 ALTER USER '$MYSQL_USER_SQL'@'$MYSQL_HOST_PATTERN_SQL' IDENTIFIED BY '$MYSQL_PASSWORD_SQL';
 
 GRANT SELECT, SHOW VIEW, TRIGGER, EVENT, LOCK TABLES
-ON \`$DB_NAME_SQL\`.* TO '$MYSQL_USER_SQL'@'$MYSQL_HOST_PATTERN_SQL';
+ON `$DB_NAME_SQL`.* TO '$MYSQL_USER_SQL'@'$MYSQL_HOST_PATTERN_SQL';
 
 GRANT RELOAD ON *.* TO '$MYSQL_USER_SQL'@'$MYSQL_HOST_PATTERN_SQL';
 
