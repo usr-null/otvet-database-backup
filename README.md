@@ -2,11 +2,19 @@
 
 Automated encrypted MySQL backups using GitHub Actions.
 
-This repository provides a simple way to create off-site MySQL database backups using GitHub Actions. Backups are compressed and encrypted with age on the server before being transferred, so they can be safely stored in a public GitHub repository without exposing database contents.
+This repository provides a simple way to create off-site MySQL database backups using GitHub Actions. Backups are processed on the server, optionally compressed or transformed, encrypted with age, and then stored in GitHub.
 
-By combining end-to-end encryption with GitHub's free infrastructure for public repositories, this project provides a low-cost, automated, and privacy-preserving backup setup without requiring dedicated backup servers or paid storage.
+Because encryption happens before data leaves the server, backups can safely be stored in a public repository without exposing database contents.
 
-To get started, fork this repository to your GitHub account. Your fork will be used to configure repository secrets and define the server that should be backed up.
+## Features
+
+* End-to-end encryption using age
+* Forced-command SSH backup account
+* Database-specific MySQL permissions
+* Configurable MySQL connection command
+* Configurable processing/compression pipeline
+* GitHub Actions automation
+* Public-repository friendly
 
 ## Installing
 
@@ -15,7 +23,11 @@ Install the required packages on the MySQL server:
 ```sh
 apt update
 apt install -y mysql-client zstd openssh-server curl
+```
 
+Install age:
+
+```sh
 AGE_VERSION="1.2.1"
 
 curl -fsSL \
@@ -38,11 +50,19 @@ age-keygen -o backup-key.txt
 
 Keep `backup-key.txt` private. It is required to decrypt your backups.
 
-Copy the public key printed by `age-keygen`. It starts with:
+The public key looks like:
 
 ```text
 age1...
 ```
+
+Generate an SSH key for backup access:
+
+```sh
+ssh-keygen -t ed25519 -f id_ed25519_backup
+```
+
+## Basic setup
 
 Run the setup script on the MySQL server as root:
 
@@ -51,20 +71,110 @@ curl -fsSL https://raw.githubusercontent.com/your-name/your-fork/refs/heads/main
 SSH_PUBLIC_KEY='ssh-ed25519 AAAA...' \
 AGE_PUBLIC_KEY='age1...' \
 DB_NAME='my_database' \
-MYSQL_PASSWORD='strong-backup-mysql-password' \
+MYSQL_PASSWORD='strong-backup-password' \
 sh
 ```
 
-The setup script will create a restricted `backup` system user, install a forced SSH command, create a limited MySQL user, and allow that user to dump only the selected database.
+The script will:
 
-If MySQL administrative access requires a custom command, specify it with `MYSQL_ADMIN_CMD`:
+* create or update a restricted backup user
+* install a forced SSH command
+* create a dedicated MySQL backup user
+* grant access only to the selected database
+* install the backup command
+
+## Advanced configuration
+
+### Custom MySQL administration command
+
+Some systems require a custom command for administrative access:
+
+```sh
+MYSQL_ADMIN_CMD='sudo mysql'
+```
+
+Example:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/your-name/your-fork/refs/heads/main/setup.sh | \
 SSH_PUBLIC_KEY='ssh-ed25519 AAAA...' \
 AGE_PUBLIC_KEY='age1...' \
 DB_NAME='my_database' \
-MYSQL_PASSWORD='strong-backup-mysql-password' \
+MYSQL_PASSWORD='strong-backup-password' \
 MYSQL_ADMIN_CMD='sudo mysql' \
 sh
+```
+
+### Custom mysqldump command
+
+For Docker, TCP-only setups, or non-default ports:
+
+```sh
+MYSQLDUMP_CMD='mysqldump --host 127.0.0.1 --port 3306'
+```
+
+### Custom MySQL host pattern
+
+By default the backup user is created for:
+
+```text
+localhost
+```
+
+You can allow a different source address pattern:
+
+```sh
+MYSQL_HOST_PATTERN='172.18.%'
+```
+
+### Custom processing pipeline
+
+Before encryption the dump is passed through a processing command.
+
+Default:
+
+```sh
+PROCESS_COMMAND='zstd -19'
+```
+
+Examples:
+
+```sh
+PROCESS_COMMAND='cat'
+```
+
+```sh
+PROCESS_COMMAND='zstd -10 -T0'
+```
+
+```sh
+PROCESS_COMMAND='zstd -22 --ultra'
+```
+
+Note that aggressive settings such as:
+
+```sh
+zstd -22 --ultra --long=31
+```
+
+may require several gigabytes of RAM and can be killed by the operating system on small VPS instances.
+
+## Restoring
+
+Decrypt:
+
+```sh
+age -d -i backup-key.txt backup.sql.zst.age > backup.sql.zst
+```
+
+Decompress:
+
+```sh
+zstd -d backup.sql.zst -o backup.sql
+```
+
+Restore:
+
+```sh
+mysql my_database < backup.sql
 ```
