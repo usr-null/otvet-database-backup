@@ -61,6 +61,7 @@ $MYSQLDUMP_CMD \\
   -u "$MYSQL_USER" \\
   -p"\$MYSQL_RUNTIME_PASSWORD" \\
   --single-transaction \\
+  --set-gtid-purged=OFF \\
   --routines \\
   --triggers \\
   --events \\
