@@ -7,6 +7,8 @@ By combining end-to-end encryption with the generous free tier available to publ
 ## Installing
 Install required packages on the MySQL server:
 
+To get started, fork this repository to your GitHub account. You'll use your fork to configure the required secrets and define the server that will be backed up.
+
 ```sh
 apt update
 apt install -y mysql-client zstd age openssh-server
@@ -27,7 +29,7 @@ age1...
 Run setup on the server as root:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/usr-null/mysql-crypto-backup/refs/heads/main/setup.sh | \
+curl -fsSL https://raw.githubusercontent.com/your-name/your-fork/refs/heads/main/setup.sh | \
 SSH_PUBLIC_KEY='ssh-ed25519 AAAA...' \
 AGE_PUBLIC_KEY='age1...' \
 DB_NAME='my_database' \
