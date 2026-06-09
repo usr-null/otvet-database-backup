@@ -10,6 +10,8 @@ By combining strong end-to-end encryption with GitHub's generous free infrastruc
 
 Backups are stored as GitHub Release assets and automatically split across multiple files when necessary. This avoids repository file size limitations while allowing large backup histories to be retained using GitHub's release storage infrastructure.
 
+**Important:** If the private age key is lost, backups become unrecoverable. If the private age key is leaked, all backups encrypted with the corresponding public key should be considered compromised. Generate a new key pair and rotate `AGE_PUBLIC_KEY` immediately.
+
 ## Features
 
 * End-to-end encryption using age
