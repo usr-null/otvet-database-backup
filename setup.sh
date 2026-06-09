@@ -2,6 +2,7 @@
 set -eu
 
 : "${BACKUP_USER:=backup}"
+: "${BACKUP_HOME:=/home/$BACKUP_USER}"
 : "${BACKUP_COMMAND:=/usr/local/sbin/github-mysql-backup.sh}"
 
 : "${SSH_PUBLIC_KEY:?set SSH_PUBLIC_KEY}"
@@ -27,19 +28,25 @@ MYSQL_PASSWORD_SQL="$(sql_string "$MYSQL_PASSWORD")"
 DB_NAME_SQL="$(sql_ident "$DB_NAME")"
 
 if ! id "$BACKUP_USER" >/dev/null 2>&1; then
-  useradd -m -s /bin/sh "$BACKUP_USER"
+  useradd -m -d "$BACKUP_HOME" -s /bin/sh "$BACKUP_USER"
+else
+  mkdir -p "$BACKUP_HOME"
+  usermod -d "$BACKUP_HOME" -s /bin/sh "$BACKUP_USER"
 fi
+
+chown "$BACKUP_USER:$BACKUP_USER" "$BACKUP_HOME"
+chmod 755 "$BACKUP_HOME"
 
 passwd -l "$BACKUP_USER" >/dev/null 2>&1 || true
 
-install -d -m 700 -o "$BACKUP_USER" -g "$BACKUP_USER" "/home/$BACKUP_USER/.ssh"
+install -d -m 700 -o "$BACKUP_USER" -g "$BACKUP_USER" "$BACKUP_HOME/.ssh"
 
-cat > "/home/$BACKUP_USER/.ssh/authorized_keys" <<EOF
+cat > "$BACKUP_HOME/.ssh/authorized_keys" <<EOF
 restrict,command="$BACKUP_COMMAND" $SSH_PUBLIC_KEY
 EOF
 
-chown "$BACKUP_USER:$BACKUP_USER" "/home/$BACKUP_USER/.ssh/authorized_keys"
-chmod 600 "/home/$BACKUP_USER/.ssh/authorized_keys"
+chown "$BACKUP_USER:$BACKUP_USER" "$BACKUP_HOME/.ssh/authorized_keys"
+chmod 600 "$BACKUP_HOME/.ssh/authorized_keys"
 
 cat > "$BACKUP_COMMAND" <<EOF
 #!/bin/sh
