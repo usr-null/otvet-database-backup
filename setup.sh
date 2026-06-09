@@ -58,21 +58,21 @@ set -euo pipefail
 
 MYSQL_RUNTIME_PASSWORD=""
 IFS= read -r MYSQL_RUNTIME_PASSWORD || true
-MYSQL_RUNTIME_PASSWORD="$(printf '%s' "$MYSQL_RUNTIME_PASSWORD" | tr -d '\r')"
+MYSQL_RUNTIME_PASSWORD="\$(printf '%s' "\$MYSQL_RUNTIME_PASSWORD" | tr -d '\r')"
 
-$MYSQLDUMP_CMD \
--u "$MYSQL_USER" \
--p"$MYSQL_RUNTIME_PASSWORD" \
---single-transaction \
---set-gtid-purged=OFF \
---routines \
---triggers \
---events \
---hex-blob \
---no-tablespaces \
---default-character-set="$MYSQL_CHARSET" \
---databases "$DB_NAME" \
-| $PROCESS_COMMAND \
+$MYSQLDUMP_CMD \\
+-u "$MYSQL_USER" \\
+-p"\$MYSQL_RUNTIME_PASSWORD" \\
+--single-transaction \\
+--set-gtid-purged=OFF \\
+--routines \\
+--triggers \\
+--events \\
+--hex-blob \\
+--no-tablespaces \\
+--default-character-set="$MYSQL_CHARSET" \\
+--databases "$DB_NAME" \\
+| $PROCESS_COMMAND \\
 | age -r "$AGE_PUBLIC_KEY"
 EOF
 
@@ -84,7 +84,7 @@ CREATE USER IF NOT EXISTS '$MYSQL_USER_SQL'@'$MYSQL_HOST_PATTERN_SQL' IDENTIFIED
 ALTER USER '$MYSQL_USER_SQL'@'$MYSQL_HOST_PATTERN_SQL' IDENTIFIED BY '$MYSQL_PASSWORD_SQL';
 
 GRANT SELECT, SHOW VIEW, TRIGGER, EVENT, LOCK TABLES
-ON `$DB_NAME_SQL`.* TO '$MYSQL_USER_SQL'@'$MYSQL_HOST_PATTERN_SQL';
+ON \`$DB_NAME_SQL\`.* TO '$MYSQL_USER_SQL'@'$MYSQL_HOST_PATTERN_SQL';
 
 GRANT RELOAD ON *.* TO '$MYSQL_USER_SQL'@'$MYSQL_HOST_PATTERN_SQL';
 
