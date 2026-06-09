@@ -48,5 +48,3 @@ MYSQL_PASSWORD='strong-backup-mysql-password' \
 MYSQL_ADMIN_CMD='sudo mysql' \
 sh
 ```
-```
-```
