@@ -69,7 +69,7 @@ $MYSQLDUMP_CMD \\
   --no-tablespaces \\
   --default-character-set="$MYSQL_CHARSET" \\
   --databases "$DB_NAME" \\
-| zstd -19 \\
+| zstd -22 --ultra --long=31 \\
 | age -r "$AGE_PUBLIC_KEY"
 EOF
 
