@@ -56,7 +56,8 @@ cat > "$BACKUP_COMMAND" <<EOF
 #!/bin/bash
 set -euo pipefail
 
-IFS= read -r MYSQL_RUNTIME_PASSWORD
+MYSQL_RUNTIME_PASSWORD=""
+IFS= read -r MYSQL_RUNTIME_PASSWORD || true
 MYSQL_RUNTIME_PASSWORD="$(printf '%s' "$MYSQL_RUNTIME_PASSWORD" | tr -d '\r')"
 
 $MYSQLDUMP_CMD \
