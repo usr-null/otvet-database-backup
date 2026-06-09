@@ -181,26 +181,6 @@ PROCESS_COMMAND='zstd -22 --ultra --long=31'
 
 Be aware that aggressive compression settings can consume large amounts of memory and may be terminated by the operating system on small VPS instances.
 
-## Restoring
-
-Decrypt:
-
-```sh
-age -d -i backup-key.txt backup.sql.zst.age > backup.sql.zst
-```
-
-Decompress:
-
-```sh
-zstd -d backup.sql.zst -o backup.sql
-```
-
-Restore:
-
-```sh
-mysql my_database < backup.sql
-```
-
 ## Security model
 
 * Database contents are encrypted before leaving the server.
