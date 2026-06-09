@@ -4,10 +4,10 @@ This repository provides a simple way to automate MySQL database backups using G
 
 By combining end-to-end encryption with the generous free tier available to public GitHub repositories, it enables low-cost, automated, and privacy-preserving off-site backups without requiring dedicated backup infrastructure.
 
+To get started, fork this repository to your GitHub account. You'll use your fork to configure the required secrets and define the server that will be backed up.
+
 ## Installing
 Install required packages on the MySQL server:
-
-To get started, fork this repository to your GitHub account. You'll use your fork to configure the required secrets and define the server that will be backed up.
 
 ```sh
 apt update
