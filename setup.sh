@@ -56,13 +56,40 @@ cat > "$BACKUP_COMMAND" <<EOF
 #!/bin/bash
 set -euo pipefail
 
+if ! awk '\$2 == "/dev/shm" && \$3 == "tmpfs" { found = 1 } END { exit !found }' /proc/mounts; then
+  echo "/dev/shm tmpfs is required for in-memory MySQL credentials file" >&2
+  exit 1
+fi
+
 MYSQL_RUNTIME_PASSWORD=""
 IFS= read -r MYSQL_RUNTIME_PASSWORD || true
 MYSQL_RUNTIME_PASSWORD="\$(printf '%s' "\$MYSQL_RUNTIME_PASSWORD" | tr -d '\r')"
 
-$MYSQLDUMP_CMD \\
--u "$MYSQL_USER" \\
--p"\$MYSQL_RUNTIME_PASSWORD" \\
+MYSQL_CNF=""
+cleanup() {
+  if [ -n "\$MYSQL_CNF" ]; then
+    rm -f "\$MYSQL_CNF"
+  fi
+}
+trap cleanup EXIT INT TERM
+
+umask 077
+MYSQL_CNF="\$(mktemp /dev/shm/mysql-backup.XXXXXX)"
+chmod 600 "\$MYSQL_CNF"
+
+cat > "\$MYSQL_CNF" <<CNF
+[client]
+user=$MYSQL_USER
+password=\$MYSQL_RUNTIME_PASSWORD
+default-character-set=$MYSQL_CHARSET
+CNF
+
+MYSQLDUMP_CMD_ARR=( $MYSQLDUMP_CMD )
+PROCESS_COMMAND_ARR=( $PROCESS_COMMAND )
+
+"\${MYSQLDUMP_CMD_ARR[0]}" \\
+--defaults-extra-file="\$MYSQL_CNF" \\
+"\${MYSQLDUMP_CMD_ARR[@]:1}" \\
 --single-transaction \\
 --set-gtid-purged=OFF \\
 --routines \\
@@ -70,9 +97,8 @@ $MYSQLDUMP_CMD \\
 --events \\
 --hex-blob \\
 --no-tablespaces \\
---default-character-set="$MYSQL_CHARSET" \\
 --databases "$DB_NAME" \\
-| $PROCESS_COMMAND \\
+| "\${PROCESS_COMMAND_ARR[@]}" \\
 | age -r "$AGE_PUBLIC_KEY"
 EOF
 
