@@ -1,4 +1,3 @@
-```sh
 #!/bin/sh
 set -eu
 
@@ -408,4 +407,3 @@ printf '%s\n' "  4. Pin your SSH host key in GitHub as SSH_KNOWN_HOSTS."
 printf '%s\n' "  5. Run the GitHub Actions workflow."
 printf '%s\n' ""
 printf '%s\n' "Done."
-```
