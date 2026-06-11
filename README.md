@@ -409,17 +409,44 @@ Create these workflow files:
 .github/workflows/cl-backup.yml
 ```
 
-`mk-backup.yml` creates encrypted backup releases.
+`mk-backup.yml` creates encrypted backup releases. It can be started manually, by GitHub schedule, or externally through `repository_dispatch`.
 
 `cl-backup.yml` deletes old backup releases according to `RETENTION_KEEP_LAST`.
 
 The cleanup workflow is triggered:
 
 * manually through `workflow_dispatch`;
-* daily at 04:00 UTC;
+* daily at 17:00 UTC;
 * after a successful `Encrypted MySQL backup` workflow run.
 
 No extra synchronization is required as long as both workflows use the same `RELEASE_PREFIX`.
+
+### External backup triggering with repository_dispatch
+
+The backup workflow also supports GitHub's `repository_dispatch` event. This allows a trusted external system, such as a database server, monitoring service, cron job, or `systemd` timer, to trigger a backup through the GitHub API.
+
+This can be useful when GitHub `schedule` is not precise enough for your backup policy. Scheduled workflow runs may be delayed during periods of high GitHub Actions load, and queued scheduled jobs may be dropped if the load is high enough. A server-side timer that sends `repository_dispatch` gives you control over when dispatch requests are sent.
+
+The workflow listens for this dispatch event type:
+
+```yaml
+repository_dispatch:
+  types: [run-backup]
+```
+
+Example request:
+
+```sh
+curl -fsS -X POST \
+  -H "Authorization: Bearer ${GH_TOKEN}" \
+  -H "Accept: application/vnd.github+json" \
+  https://api.github.com/repos/OWNER/REPOSITORY/dispatches \
+  -d '{"event_type":"run-backup","client_payload":{"source":"external"}}'
+```
+
+The token used for dispatch must be allowed to create repository dispatch events for the repository. Store this token only on the trusted machine that triggers backups. Do not commit it to the repository.
+
+`repository_dispatch` is an additional trigger. It does not replace `workflow_dispatch` or `schedule`; you can keep all three enabled.
 
 ## Common configuration examples
 
