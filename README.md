@@ -308,6 +308,14 @@ Secrets are used for sensitive values and for operational metadata that you pref
 
 The SSH private key and MySQL password must never be committed to the repository.
 
+> [!NOTE]
+> GitHub Actions masks every exact secret value in workflow logs. Very short secrets, such as `22`, `3306`, `backup`, or other common short strings, may accidentally match parts of normal log output and produce confusing `***` fragments in progress counters, byte counts, URLs, or diagnostic messages.
+>
+> This does not mean that backup data was leaked or corrupted. It is only log masking.
+>
+> For non-sensitive short values such as `SSH_PORT` or `BACKUP_USER`, prefer repository variables instead of secrets unless you specifically want to hide that operational metadata.
+
+
 ### 7. Define GitHub Actions variables
 
 Repository variables are used for non-sensitive workflow configuration.
