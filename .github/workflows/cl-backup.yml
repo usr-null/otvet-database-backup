@@ -1,0 +1,138 @@
+name: Cleanup backup releases
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Runs daily at 04:00 UTC, after the default backup schedule.
+    - cron: "0 12 * * *"
+  workflow_run:
+    workflows:
+      - Encrypted MySQL backup
+    types:
+      - completed
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mysql-crypto-backup-retention
+  cancel-in-progress: false
+
+env:
+  RELEASE_PREFIX: ${{ vars.RELEASE_PREFIX || 'mysql-backup' }}
+  RETENTION_KEEP_LAST: ${{ vars.RETENTION_KEEP_LAST || '30' }}
+
+jobs:
+  cleanup:
+    name: Apply backup retention
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
+
+    steps:
+      - name: Validate retention configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "$RELEASE_PREFIX" ]; then
+            echo "::error::RELEASE_PREFIX must not be empty"
+            exit 1
+          fi
+
+          case "$RETENTION_KEEP_LAST" in
+            ''|*[!0-9]*)
+              echo "::error::RETENTION_KEEP_LAST must be numeric"
+              exit 1
+              ;;
+          esac
+
+          if [ "$RETENTION_KEEP_LAST" -lt 1 ]; then
+            echo "::error::RETENTION_KEEP_LAST must be at least 1"
+            exit 1
+          fi
+
+          echo "Retention configuration validated."
+          echo "Release prefix: $RELEASE_PREFIX"
+          echo "Keep last releases: $RETENTION_KEEP_LAST"
+
+      - name: Delete old backup releases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+
+          WORKDIR="$RUNNER_TEMP/mysql-crypto-backup-retention"
+          RELEASES_JSON="$WORKDIR/releases.json"
+          DELETE_TAGS="$WORKDIR/delete-tags.txt"
+
+          mkdir -p "$WORKDIR"
+
+          echo "Fetching repository releases..."
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            > "$RELEASES_JSON"
+
+          export RELEASES_JSON
+          export DELETE_TAGS
+
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import sys
+
+          releases_path = os.environ["RELEASES_JSON"]
+          delete_tags_path = os.environ["DELETE_TAGS"]
+          prefix = os.environ["RELEASE_PREFIX"]
+          keep_last = int(os.environ["RETENTION_KEEP_LAST"])
+
+          with open(releases_path, "r", encoding="utf-8") as f:
+              releases = json.load(f)
+
+          pattern = re.compile(r"^" + re.escape(prefix) + r"-\d{8}T\d{6}Z$")
+
+          backup_releases = [
+              release
+              for release in releases
+              if pattern.fullmatch(release.get("tag_name", ""))
+          ]
+
+          backup_releases.sort(
+              key=lambda release: release.get("tag_name", ""),
+              reverse=True,
+          )
+
+          kept = backup_releases[:keep_last]
+          deleted = backup_releases[keep_last:]
+
+          print(f"Matched backup releases: {len(backup_releases)}", file=sys.stderr)
+          print(f"Keeping: {len(kept)}", file=sys.stderr)
+          print(f"Deleting: {len(deleted)}", file=sys.stderr)
+
+          if kept:
+              print("Newest kept release: " + kept[0]["tag_name"], file=sys.stderr)
+              print("Oldest kept release: " + kept[-1]["tag_name"], file=sys.stderr)
+
+          with open(delete_tags_path, "w", encoding="utf-8") as f:
+              for release in deleted:
+                  f.write(release["tag_name"] + "\n")
+          PY
+
+          if [ ! -s "$DELETE_TAGS" ]; then
+            echo "No old backup releases need deletion."
+            exit 0
+          fi
+
+          echo "Deleting old backup releases..."
+
+          while IFS= read -r tag; do
+            [ -n "$tag" ] || continue
+            echo "Deleting release and tag: $tag"
+            gh release delete "$tag" \
+              --yes \
+              --cleanup-tag \
+              --repo "$GITHUB_REPOSITORY"
+          done < "$DELETE_TAGS"
+
+          echo "Backup retention cleanup completed."
