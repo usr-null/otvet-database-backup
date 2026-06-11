@@ -5,7 +5,7 @@ on:
   schedule:
     # Runs daily at 03:00 UTC.
     # Change this cron expression if you need a different backup schedule.
-    - cron: "0 6 * * *"
+    - cron: "0 12 * * *"
 
 permissions:
   contents: write
@@ -436,9 +436,15 @@ jobs:
                   f"age -d -i backup-key.txt < {backup_file} > backup.processed",
                   "```",
                   "",
-                  "The decrypted `backup.processed` file is the exact output of the server-side `PROCESS_COMMAND` configured during setup.",
+                  "The decrypted `backup.processed` file is the exact stream that was encrypted on the server.",
                   "",
-                  "If you used the default `PROCESS_COMMAND='zstd -19'`, decompress it with:",
+                  "If `PROCESS_COMMAND` was empty during setup, `backup.processed` is already a SQL dump:",
+                  "",
+                  "```sh",
+                  "mv backup.processed backup.sql",
+                  "```",
+                  "",
+                  "If you used compression, reverse that processing step first. For example, if you configured `PROCESS_COMMAND='zstd -19'`, decompress it with:",
                   "",
                   "```sh",
                   "zstd -d -c backup.processed > backup.sql",
@@ -491,9 +497,15 @@ jobs:
                   f"age -d -i backup-key.txt < {backup_file} > backup.processed",
                   "```",
                   "",
-                  "The decrypted `backup.processed` file is the exact output of the server-side `PROCESS_COMMAND` configured during setup.",
+                  "The decrypted `backup.processed` file is the exact stream that was encrypted on the server.",
                   "",
-                  "If you used the default `PROCESS_COMMAND='zstd -19'`, decompress it with:",
+                  "If `PROCESS_COMMAND` was empty during setup, `backup.processed` is already a SQL dump:",
+                  "",
+                  "```sh",
+                  "mv backup.processed backup.sql",
+                  "```",
+                  "",
+                  "If you used compression, reverse that processing step first. For example, if you configured `PROCESS_COMMAND='zstd -19'`, decompress it with:",
                   "",
                   "```sh",
                   "zstd -d -c backup.processed > backup.sql",
