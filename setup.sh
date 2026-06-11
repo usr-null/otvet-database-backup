@@ -38,7 +38,10 @@ die() {
 : "${MYSQL_CHARSET:=utf8mb4}"
 : "${MYSQL_ADMIN_CMD:=mysql}"
 
-: "${PROCESS_COMMAND:=zstd -19}"
+# Empty PROCESS_COMMAND means direct streaming:
+#   mysqldump -> age
+# Set it to something like "zstd -19" if you want compression before encryption.
+: "${PROCESS_COMMAND:=}"
 
 MISSING_REQUIRED=""
 
@@ -228,7 +231,10 @@ require_command usermod
 require_command age
 require_command_from_setting MYSQL_ADMIN_CMD "$MYSQL_ADMIN_CMD"
 require_command_from_setting MYSQLDUMP_CMD "$MYSQLDUMP_CMD"
-require_command_from_setting PROCESS_COMMAND "$PROCESS_COMMAND"
+
+if [ -n "$PROCESS_COMMAND" ]; then
+  require_command_from_setting PROCESS_COMMAND "$PROCESS_COMMAND"
+fi
 
 if ! awk '$2 == "/dev/shm" && $3 == "tmpfs" { found = 1 } END { exit !found }' /proc/mounts; then
   die "/dev/shm tmpfs is required for the temporary in-memory MySQL credentials file"
@@ -245,7 +251,11 @@ printf '%s\n' "  MySQL host pattern:       $MYSQL_HOST_PATTERN"
 printf '%s\n' "  Database:                 $DB_NAME"
 printf '%s\n' "  MySQL dump command:       $MYSQLDUMP_CMD"
 printf '%s\n' "  MySQL character set:      $MYSQL_CHARSET"
-printf '%s\n' "  Processing command:       $PROCESS_COMMAND"
+if [ -n "$PROCESS_COMMAND" ]; then
+  printf '%s\n' "  Processing command:       $PROCESS_COMMAND"
+else
+  printf '%s\n' "  Processing command:       none; direct mysqldump -> age"
+fi
 printf '%s\n' "  MySQL password:           configured"
 printf '%s\n' "  SSH public key:           configured"
 printf '%s\n' "  age public key:           configured"
@@ -295,80 +305,106 @@ chmod 600 "$BACKUP_HOME/.ssh/authorized_keys"
 ok "Forced SSH command installed in authorized_keys"
 
 info "Installing backup command"
-cat > "$BACKUP_COMMAND" <<EOF_COMMAND
-#!/bin/bash
-set -euo pipefail
+{
+  printf '%s\n' '#!/bin/bash'
+  printf '%s\n' 'set -euo pipefail'
+  printf '%s\n' ''
+  printf '%s\n' 'PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"'
+  printf '%s\n' 'export PATH'
+  printf '%s\n' ''
+  printf '%s\n' "MYSQLDUMP_CMD_RAW=$MYSQLDUMP_CMD_SH"
+  printf '%s\n' "PROCESS_COMMAND_RAW=$PROCESS_COMMAND_SH"
+  printf '%s\n' "MYSQL_USER=$MYSQL_USER_SH"
+  printf '%s\n' "MYSQL_CHARSET=$MYSQL_CHARSET_SH"
+  printf '%s\n' "DB_NAME=$DB_NAME_SH"
+  printf '%s\n' "AGE_PUBLIC_KEY=$AGE_PUBLIC_KEY_SH"
+  cat <<'EOF_COMMAND_BODY'
 
-PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-export PATH
-
-MYSQLDUMP_CMD_RAW=$MYSQLDUMP_CMD_SH
-PROCESS_COMMAND_RAW=$PROCESS_COMMAND_SH
-MYSQL_USER=$MYSQL_USER_SH
-MYSQL_CHARSET=$MYSQL_CHARSET_SH
-DB_NAME=$DB_NAME_SH
-AGE_PUBLIC_KEY=$AGE_PUBLIC_KEY_SH
-
-if ! awk '\$2 == "/dev/shm" && \$3 == "tmpfs" { found = 1 } END { exit !found }' /proc/mounts; then
+if ! awk '$2 == "/dev/shm" && $3 == "tmpfs" { found = 1 } END { exit !found }' /proc/mounts; then
   echo "/dev/shm tmpfs is required for in-memory MySQL credentials file" >&2
   exit 1
 fi
 
 MYSQL_RUNTIME_PASSWORD=""
 IFS= read -r MYSQL_RUNTIME_PASSWORD || true
-MYSQL_RUNTIME_PASSWORD="\$(printf '%s' "\$MYSQL_RUNTIME_PASSWORD" | tr -d '\r')"
+MYSQL_RUNTIME_PASSWORD="$(printf '%s' "$MYSQL_RUNTIME_PASSWORD" | tr -d '\r')"
 
 MYSQL_CNF=""
+
 cleanup() {
-  if [ -n "\$MYSQL_CNF" ]; then
-    rm -f "\$MYSQL_CNF"
+  if [ -n "$MYSQL_CNF" ]; then
+    rm -f "$MYSQL_CNF"
   fi
 }
+
 trap cleanup EXIT INT TERM
 
 cnf_escape() {
-  local s="\$1"
-  s="\${s//\\/\\\\}"
-  s="\${s//\"/\\\"}"
-  printf '%s' "\$s"
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
-MYSQL_CNF_USER="\$(cnf_escape "\$MYSQL_USER")"
-MYSQL_CNF_PASSWORD="\$(cnf_escape "\$MYSQL_RUNTIME_PASSWORD")"
-MYSQL_CNF_CHARSET="\$(cnf_escape "\$MYSQL_CHARSET")"
+MYSQL_CNF_USER="$(cnf_escape "$MYSQL_USER")"
+MYSQL_CNF_PASSWORD="$(cnf_escape "$MYSQL_RUNTIME_PASSWORD")"
+MYSQL_CNF_CHARSET="$(cnf_escape "$MYSQL_CHARSET")"
 
 umask 077
-MYSQL_CNF="\$(mktemp /dev/shm/mysql-backup.XXXXXX)"
-chmod 600 "\$MYSQL_CNF"
+MYSQL_CNF="$(mktemp /dev/shm/mysql-backup.XXXXXX)"
+chmod 600 "$MYSQL_CNF"
 
-cat > "\$MYSQL_CNF" <<CNF
+cat > "$MYSQL_CNF" <<CNF
 [client]
-user="\$MYSQL_CNF_USER"
-password="\$MYSQL_CNF_PASSWORD"
-default-character-set="\$MYSQL_CNF_CHARSET"
+user="$MYSQL_CNF_USER"
+password="$MYSQL_CNF_PASSWORD"
+default-character-set="$MYSQL_CNF_CHARSET"
 CNF
 
-read -r -a MYSQLDUMP_CMD_ARR <<< "\$MYSQLDUMP_CMD_RAW"
-read -r -a PROCESS_COMMAND_ARR <<< "\$PROCESS_COMMAND_RAW"
+read -r -a MYSQLDUMP_CMD_ARR <<< "$MYSQLDUMP_CMD_RAW"
 
-"\${MYSQLDUMP_CMD_ARR[0]}" \\
-  --defaults-extra-file="\$MYSQL_CNF" \\
-  "\${MYSQLDUMP_CMD_ARR[@]:1}" \\
-  --single-transaction \\
-  --quick \\
-  --set-gtid-purged=OFF \\
-  --routines \\
-  --triggers \\
-  --events \\
-  --hex-blob \\
-  --no-tablespaces \\
-  --databases "\$DB_NAME" \\
-  | "\${PROCESS_COMMAND_ARR[@]}" \\
-  | age -r "\$AGE_PUBLIC_KEY"
-EOF_COMMAND
+if [ "${#MYSQLDUMP_CMD_ARR[@]}" -eq 0 ]; then
+  echo "MYSQLDUMP_CMD is empty" >&2
+  exit 1
+fi
+
+run_mysqldump() {
+  "${MYSQLDUMP_CMD_ARR[0]}" \
+    --defaults-extra-file="$MYSQL_CNF" \
+    "${MYSQLDUMP_CMD_ARR[@]:1}" \
+    --single-transaction \
+    --quick \
+    --set-gtid-purged=OFF \
+    --routines \
+    --triggers \
+    --events \
+    --hex-blob \
+    --no-tablespaces \
+    --databases "$DB_NAME"
+}
+
+if [ -n "$PROCESS_COMMAND_RAW" ]; then
+  read -r -a PROCESS_COMMAND_ARR <<< "$PROCESS_COMMAND_RAW"
+
+  if [ "${#PROCESS_COMMAND_ARR[@]}" -eq 0 ]; then
+    echo "PROCESS_COMMAND is empty after parsing" >&2
+    exit 1
+  fi
+
+  run_mysqldump \
+    | "${PROCESS_COMMAND_ARR[@]}" \
+    | age -r "$AGE_PUBLIC_KEY"
+else
+  run_mysqldump \
+    | age -r "$AGE_PUBLIC_KEY"
+fi
+EOF_COMMAND_BODY
+} > "$BACKUP_COMMAND"
 
 chown root:root "$BACKUP_COMMAND"
 chmod 755 "$BACKUP_COMMAND"
+
+if ! bash -n "$BACKUP_COMMAND"; then
+  die "Generated backup command has invalid bash syntax: $BACKUP_COMMAND"
+fi
+
 ok "Backup command installed: $BACKUP_COMMAND"
 
 info "Creating or updating MySQL backup user and grants"
@@ -392,6 +428,10 @@ fi
 
 if [ ! -x "$BACKUP_COMMAND" ]; then
   die "Backup command was not created as an executable file"
+fi
+
+if ! bash -n "$BACKUP_COMMAND"; then
+  die "Backup command failed final syntax verification"
 fi
 
 ok "Installed files verified"
