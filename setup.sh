@@ -19,15 +19,15 @@ set -eu
 : "${PROCESS_COMMAND:=zstd -19}"
 
 sql_string() {
-printf "%s" "$1" | sed "s|\\\\|\\\\\\\\|g; s|'|''|g"
+  printf "%s" "$1" | sed "s|\\\\|\\\\\\\\|g; s|'|''|g"
 }
 
 sql_ident() {
-printf "%s" "$1" | sed 's/`/``/g'
+  printf "%s" "$1" | sed 's/`/``/g'
 }
 
 shell_string() {
-printf "'%s'" "$(printf "%s" "$1" | sed "s/'/'\\\\''/g")"
+  printf "'%s'" "$(printf "%s" "$1" | sed "s/'/'\\\\''/g")"
 }
 
 MYSQL_USER_SQL="$(sql_string "$MYSQL_USER")"
@@ -43,10 +43,10 @@ DB_NAME_SH="$(shell_string "$DB_NAME")"
 AGE_PUBLIC_KEY_SH="$(shell_string "$AGE_PUBLIC_KEY")"
 
 if ! id "$BACKUP_USER" >/dev/null 2>&1; then
-useradd -m -d "$BACKUP_HOME" -s /bin/sh "$BACKUP_USER"
+  useradd -m -d "$BACKUP_HOME" -s /bin/sh "$BACKUP_USER"
 else
-mkdir -p "$BACKUP_HOME"
-usermod -d "$BACKUP_HOME" -s /bin/sh "$BACKUP_USER"
+  mkdir -p "$BACKUP_HOME"
+  usermod -d "$BACKUP_HOME" -s /bin/sh "$BACKUP_USER"
 fi
 
 chown "$BACKUP_USER:$BACKUP_USER" "$BACKUP_HOME"
@@ -117,18 +117,18 @@ read -r -a MYSQLDUMP_CMD_ARR <<< "\$MYSQLDUMP_CMD_RAW"
 read -r -a PROCESS_COMMAND_ARR <<< "\$PROCESS_COMMAND_RAW"
 
 "\${MYSQLDUMP_CMD_ARR[0]}" \\
---defaults-extra-file="\$MYSQL_CNF" \\
-"\${MYSQLDUMP_CMD_ARR[@]:1}" \\
---single-transaction \\
---set-gtid-purged=OFF \\
---routines \\
---triggers \\
---events \\
---hex-blob \\
---no-tablespaces \\
---databases "\$DB_NAME" \\
-| "\${PROCESS_COMMAND_ARR[@]}" \\
-| age -r "\$AGE_PUBLIC_KEY"
+  --defaults-extra-file="\$MYSQL_CNF" \\
+  "\${MYSQLDUMP_CMD_ARR[@]:1}" \\
+  --single-transaction \\
+  --set-gtid-purged=OFF \\
+  --routines \\
+  --triggers \\
+  --events \\
+  --hex-blob \\
+  --no-tablespaces \\
+  --databases "\$DB_NAME" \\
+  | "\${PROCESS_COMMAND_ARR[@]}" \\
+  | age -r "\$AGE_PUBLIC_KEY"
 EOF_COMMAND
 
 chown root:root "$BACKUP_COMMAND"
