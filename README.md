@@ -2,7 +2,7 @@
 
 Automated encrypted MySQL backups using GitHub Actions.
 
-`mysql-crypto-backup` creates off-site MySQL backups by running `mysqldump` on the database server, processing the dump stream locally on that server, encrypting the processed stream with [`age`](https://github.com/FiloSottile/age), and only then transferring the encrypted result to GitHub.
+`mysql-crypto-backup` creates off-site MySQL backups by running `mysqldump` on the database server, optionally processing the dump stream locally on that server, encrypting the resulting stream with [`age`](https://github.com/FiloSottile/age), and only then transferring the encrypted result to GitHub.
 
 Because encryption happens before any database data leaves the server, backups can be stored as GitHub Release assets, including in public repositories, without exposing database contents.
 
@@ -22,7 +22,7 @@ Because encryption happens before any database data leaves the server, backups c
 * Configurable MySQL dump command
 * Configurable MySQL administration command
 * Configurable MySQL character set
-* Configurable processing/compression pipeline
+* Optional configurable processing/compression pipeline
 * GitHub Release asset storage
 * Automatic splitting for GitHub's per-asset release limit
 * Manifest and checksums for every backup release
@@ -55,25 +55,32 @@ Because encryption happens before any database data leaves the server, backups c
 The backup command created by `setup.sh` runs this stream on the backup server:
 
 ```text
-mysqldump → PROCESS_COMMAND → age → GitHub Actions runner
+mysqldump → optional PROCESS_COMMAND → age → GitHub Actions runner
 ```
 
-With trusted defaults such as:
+By default, `PROCESS_COMMAND` is empty, so the generated backup command streams directly:
 
 ```text
-MYSQLDUMP_CMD=mysqldump
+mysqldump → age → GitHub Actions runner
+```
+
+For compression before encryption, set a trusted processing command, for example:
+
+```text
 PROCESS_COMMAND=zstd -19
 ```
 
-database contents are written to `stdout`, processed, encrypted by `age`, and only the encrypted stream is sent to GitHub Actions.
+Compression can significantly reduce backup size, but high compression levels can be much slower. For frequent backups or smaller databases, direct streaming without compression, or weak compression such as `zstd -3 -T0`, may be faster end-to-end and may still fit comfortably in GitHub Release assets.
+
+Release asset names, release timestamps, asset sizes, and the encrypted backup size are visible to anyone who can see the repository or releases. This does not reveal database contents, but it can reveal low-risk metadata such as approximate backup size and, if observed over time, the approximate growth rate of the database. Stronger compression can reduce this visible size signal; no compression or weak compression can make the size signal closer to the raw dump size.
 
 The plaintext boundary is everything before `age`.
 
-`MYSQLDUMP_CMD` and `PROCESS_COMMAND` run before encryption and must be trusted.
+`MYSQLDUMP_CMD` and any non-empty `PROCESS_COMMAND` run before encryption and must be trusted.
 
 | Path                                                              | Can expose database contents?                | Criticality | Notes                                                                                                                                                                    |
 | ----------------------------------------------------------------- | -------------------------------------------- | ----------: | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `mysqldump stdout → PROCESS_COMMAND → age stdout`                 | No, when commands are trusted                 | Low         | This is the intended path. The runner receives the encrypted `age` output.                                                                                               |
+| `mysqldump stdout → optional PROCESS_COMMAND → age stdout`                 | No, when commands are trusted                 | Low         | This is the intended path. The runner receives the encrypted `age` output.                                                                                               |
 | `mysqldump stderr`                                                | Normally no                                  | Medium      | Diagnostic output is not encrypted and may appear in workflow logs. Normal `mysqldump` errors should not contain table data, but stderr is outside the encrypted stream. |
 | `PROCESS_COMMAND stderr`                                          | Depends on command                            | High        | Safe commands such as `zstd` should not print backup contents to stderr. A custom command must not write plaintext data to stderr.                                       |
 | Unsafe `PROCESS_COMMAND`, for example duplicating input to stderr | Yes                                           | Critical    | Anything before `age` can leak plaintext if configured to print or copy the stream elsewhere.                                                                            |
@@ -85,7 +92,7 @@ The plaintext boundary is everything before `age`.
 | Wrong `BACKUP_USER` in workflow                                   | No dump if forced command is not reached      | Medium      | The workflow must connect to the same Linux user that was configured by `setup.sh`.                                                                                      |
 | Missing or bypassed forced SSH command                            | Depends on server configuration               | High        | The workflow is designed for forced-command SSH access. Do not use a normal shell account for backups.                                                                   |
 
-The project guarantees that the intended backup stream is encrypted before it reaches GitHub Actions. It does not make unsafe custom commands safe. Any command that runs before `age` is part of the trusted server-side plaintext zone.
+The project guarantees that the intended backup stream is encrypted before it reaches GitHub Actions. It does not make unsafe custom commands safe. Any configured command that runs before `age` is part of the trusted server-side plaintext zone.
 
 ### Tablespaces and MySQL privileges
 
@@ -154,14 +161,14 @@ Backup releases are created as drafts first. If asset upload fails after draft r
 3. A restricted Linux backup user executes a forced command.
 4. The server reads the MySQL backup password from standard input.
 5. `mysqldump` creates a database dump.
-6. The dump stream is processed, for example compressed with `zstd`.
-7. The processed stream is encrypted with `age`.
+6. If `PROCESS_COMMAND` is configured, the dump stream is processed, for example compressed with `zstd`.
+7. The resulting stream is encrypted with `age`.
 8. GitHub Actions stores the encrypted backup on the runner.
 9. If necessary, the encrypted backup is split into multiple release assets.
 10. GitHub Actions creates a GitHub Release and uploads the encrypted backup assets, manifest, and checksums.
 11. The cleanup workflow deletes old backup releases according to `RETENTION_KEEP_LAST`.
 
-At no point should GitHub receive unencrypted database contents when trusted dump and processing commands are used.
+At no point should GitHub receive unencrypted database contents when trusted dump and optional processing commands are used.
 
 ## Requirements
 
@@ -169,7 +176,13 @@ Install the required packages on the MySQL server:
 
 ```sh
 apt update
-apt install -y mysql-client zstd openssh-server curl
+apt install -y mysql-client openssh-server curl
+```
+
+Install `zstd` only if you plan to use a `zstd`-based `PROCESS_COMMAND`:
+
+```sh
+apt install -y zstd
 ```
 
 Install `age`:
@@ -211,7 +224,7 @@ These variables are used by `setup.sh`.
 | `MYSQLDUMP_CMD`      | No       | `mysqldump`                              | No      | Command used to create the database dump. Runs before encryption and must be trusted.                  |
 | `MYSQL_CHARSET`      | No       | `utf8mb4`                                | No      | MySQL client character set used during backup execution.                                              |
 | `MYSQL_ADMIN_CMD`    | No       | `mysql`                                  | No      | Command used by `setup.sh` to configure MySQL users and grants.                                       |
-| `PROCESS_COMMAND`    | No       | `zstd -19`                               | No      | Command used to process the dump stream before encryption. Runs before encryption and must be trusted. |
+| `PROCESS_COMMAND`    | No       | empty                                    | No      | Optional command used to process the dump stream before encryption. Empty means direct `mysqldump → age`. Any non-empty command runs before encryption and must be trusted. |
 
 Common examples:
 
@@ -221,6 +234,8 @@ MYSQLDUMP_CMD=mysqldump --host 127.0.0.1 --port 3306
 MYSQL_ADMIN_CMD=mysql --host 127.0.0.1 --port 3306 --user root -p
 PROCESS_COMMAND=zstd -19
 ```
+
+Leave `PROCESS_COMMAND` unset or set it to an empty value for direct streaming without compression. Set it to `zstd -19` when you prefer smaller backups and can accept slower server-side compression.
 
 ### 2. Generate encryption keys
 
@@ -357,7 +372,6 @@ MYSQL_HOST_PATTERN='localhost' \
 MYSQLDUMP_CMD='mysqldump' \
 MYSQL_CHARSET='utf8mb4' \
 MYSQL_ADMIN_CMD='mysql' \
-PROCESS_COMMAND='zstd -19' \
 ./setup.sh
 
 rm setup.sh
@@ -374,6 +388,7 @@ The setup script will:
 * grant backup permissions for the selected database;
 * grant the required global `RELOAD` permission;
 * use `mysqldump --no-tablespaces` in the generated backup command;
+* stream directly to `age` when `PROCESS_COMMAND` is empty;
 * print `OK` after successful completion.
 
 ## GitHub Actions workflows
@@ -453,9 +468,19 @@ MYSQLDUMP_CMD='mysqldump --host 127.0.0.1 --port 3306' \
 rm setup.sh
 ```
 
+### Direct streaming without compression
+
+By default, `PROCESS_COMMAND` is empty. The server streams directly:
+
+```text
+mysqldump → age
+```
+
+This avoids compression CPU cost and can be faster for smaller databases that still fit comfortably in GitHub Release assets. The trade-off is that encrypted asset sizes may be larger, which can make database size and growth-rate metadata easier to estimate from public release assets. This is usually a low risk compared with content exposure, but it is worth considering for public repositories.
+
 ### Custom processing command
 
-For custom dump stream processing before encryption:
+For optional dump stream processing before encryption, for example high-compression `zstd`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/your-name/your-fork/refs/heads/main/setup.sh -o setup.sh
@@ -465,7 +490,7 @@ SSH_PUBLIC_KEY='ssh-ed25519 AAAA...' \
 AGE_PUBLIC_KEY='age1...' \
 DB_NAME='my_database' \
 MYSQL_PASSWORD='strong-backup-password' \
-PROCESS_COMMAND='zstd -10 -T0' \
+PROCESS_COMMAND='zstd -19' \
 ./setup.sh
 
 rm setup.sh
@@ -522,9 +547,16 @@ Decrypt with your private `age` key:
 age -d -i backup-key.txt < mysql-backup-YYYYMMDDTHHMMSSZ.age > backup.processed
 ```
 
-`backup.processed` is the exact output of the server-side `PROCESS_COMMAND`.
+`backup.processed` is the exact output that was encrypted on the server.
 
-If you used the default processing command:
+If `PROCESS_COMMAND` was empty, `backup.processed` is already a SQL dump. You can rename it or restore from it directly after inspection:
+
+```sh
+mv backup.processed backup.sql
+mysql < backup.sql
+```
+
+If you used compression, reverse that processing step first. For example, if you configured:
 
 ```text
 PROCESS_COMMAND=zstd -19
@@ -542,7 +574,7 @@ Then inspect and restore the SQL dump according to your MySQL restore procedure:
 mysql < backup.sql
 ```
 
-If you configured a custom `PROCESS_COMMAND`, reverse that processing command instead of using `zstd -d`.
+If you configured a different custom `PROCESS_COMMAND`, reverse that processing command instead of using `zstd -d`.
 
 ## Configuration reference
 
@@ -564,7 +596,7 @@ If you configured a custom `PROCESS_COMMAND`, reverse that processing command in
 | `MYSQLDUMP_CMD`       | No       | `mysqldump`                              | `setup.sh`                 | No                     | Command used to create the database dump. Runs before encryption and must be trusted.                  |
 | `MYSQL_CHARSET`       | No       | `utf8mb4`                                | `setup.sh`                 | No                     | MySQL client character set used during backup execution.                                               |
 | `MYSQL_ADMIN_CMD`     | No       | `mysql`                                  | `setup.sh`                 | No                     | Command used to configure MySQL users and grants.                                                      |
-| `PROCESS_COMMAND`     | No       | `zstd -19`                               | `setup.sh`                 | No                     | Command used to process the dump stream before encryption. Runs before encryption and must be trusted. |
+| `PROCESS_COMMAND`     | No       | empty                                    | `setup.sh`                 | No                     | Optional command used to process the dump stream before encryption. Empty means direct `mysqldump → age`. Any non-empty command runs before encryption and must be trusted. |
 | `BACKUP_NAME`         | No       | `mysql`                                  | GitHub Actions             | No                     | Human-readable backup name used in release titles and metadata.                                        |
 | `RELEASE_PREFIX`      | No       | `mysql-backup`                           | GitHub Actions             | No                     | Prefix used for backup release tags and retention cleanup matching.                                    |
 | `ASSET_PREFIX`        | No       | `mysql-backup`                           | GitHub Actions             | No                     | Prefix used for uploaded release asset names.                                                          |
