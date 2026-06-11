@@ -135,8 +135,11 @@ jobs:
             if [ "$RELEASE_CREATED" -eq 1 ]; then
               gh release delete "$CHECK_TAG" \
                 --yes \
-                --cleanup-tag \
                 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || true
+
+              gh api \
+                --method DELETE \
+                "repos/$GITHUB_REPOSITORY/git/refs/tags/$CHECK_TAG" >/dev/null 2>&1 || true
             fi
 
             exit "$status"
@@ -163,8 +166,11 @@ jobs:
 
           gh release delete "$CHECK_TAG" \
             --yes \
-            --cleanup-tag \
             --repo "$GITHUB_REPOSITORY" >/dev/null
+
+          gh api \
+            --method DELETE \
+            "repos/$GITHUB_REPOSITORY/git/refs/tags/$CHECK_TAG" >/dev/null 2>&1 || true
 
           RELEASE_CREATED=0
 
@@ -579,8 +585,11 @@ jobs:
               echo "::warning::Deleting incomplete draft release $TAG"
               gh release delete "$TAG" \
                 --yes \
-                --cleanup-tag \
                 --repo "$GITHUB_REPOSITORY" || true
+
+              gh api \
+                --method DELETE \
+                "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" >/dev/null 2>&1 || true
             fi
           }
 
