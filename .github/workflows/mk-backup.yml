@@ -5,7 +5,7 @@ on:
   schedule:
     # Runs daily at 03:00 UTC.
     # Change this cron expression if you need a different backup schedule.
-    - cron: "0 3 * * *"
+    - cron: "0 6 * * *"
 
 permissions:
   contents: write
