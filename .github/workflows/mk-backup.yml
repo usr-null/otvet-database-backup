@@ -20,6 +20,11 @@ env:
   SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
   MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
 
+  # Required secret or repository variable.
+  # This is the pinned SSH known_hosts entry for the backup server.
+  # Secret takes priority over repository variable.
+  SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS || vars.SSH_KNOWN_HOSTS }}
+
   # Optional secret or repository variable.
   # Secret takes priority over repository variable.
   SSH_PORT: ${{ secrets.SSH_PORT || vars.SSH_PORT || '22' }}
@@ -61,6 +66,7 @@ jobs:
 
           require_value SSH_HOST
           require_value SSH_PRIVATE_KEY
+          require_value SSH_KNOWN_HOSTS
           require_value MYSQL_PASSWORD
           require_value BACKUP_USER
           require_value BACKUP_NAME
@@ -108,11 +114,63 @@ jobs:
           echo "Configuration validated."
           echo "Backup user: $BACKUP_USER"
           echo "SSH port: $SSH_PORT"
+          echo "SSH known_hosts pin: configured"
           echo "Backup name: $BACKUP_NAME"
           echo "Release prefix: $RELEASE_PREFIX"
           echo "Asset prefix: $ASSET_PREFIX"
           echo "Split size: $SPLIT_SIZE_BYTES bytes"
           echo "Max release assets: $MAX_RELEASE_ASSETS"
+
+      - name: Verify GitHub Release permissions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -Eeuo pipefail
+
+          CHECK_TAG="${RELEASE_PREFIX}-permission-check-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          RELEASE_CREATED=0
+
+          cleanup_permission_check() {
+            status="$?"
+
+            if [ "$RELEASE_CREATED" -eq 1 ]; then
+              gh release delete "$CHECK_TAG" \
+                --yes \
+                --cleanup-tag \
+                --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || true
+            fi
+
+            exit "$status"
+          }
+
+          trap cleanup_permission_check EXIT
+
+          echo "Checking whether GITHUB_TOKEN can create GitHub Releases..."
+
+          if ! gh release create "$CHECK_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Permission check $CHECK_TAG" \
+            --notes "Temporary release used to verify GitHub Actions release permissions." \
+            --target "$GITHUB_SHA" \
+            --draft \
+            --latest=false; then
+
+            echo "::error::GITHUB_TOKEN cannot create GitHub Releases for this repository."
+            echo "::error::Check repository Settings -> Actions -> General -> Workflow permissions and allow read/write permissions."
+            exit 1
+          fi
+
+          RELEASE_CREATED=1
+
+          gh release delete "$CHECK_TAG" \
+            --yes \
+            --cleanup-tag \
+            --repo "$GITHUB_REPOSITORY" >/dev/null
+
+          RELEASE_CREATED=0
+
+          echo "GitHub Release permissions verified."
 
       - name: Create encrypted backup assets
         id: backup
@@ -136,18 +194,20 @@ jobs:
           printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > "$SSH_KEY_FILE"
           chmod 600 "$SSH_KEY_FILE"
 
-          echo "::group::SSH setup"
-          echo "Preparing SSH key file..."
-          echo "Collecting SSH host key..."
+          echo "::group::SSH host pinning"
+          echo "Installing pinned SSH known_hosts entry..."
 
-          if ! ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> "$KNOWN_HOSTS_FILE" 2>/dev/null; then
+          printf '%s\n' "$SSH_KNOWN_HOSTS" | tr -d '\r' > "$KNOWN_HOSTS_FILE"
+          chmod 600 "$KNOWN_HOSTS_FILE"
+
+          if ! ssh-keygen -l -f "$KNOWN_HOSTS_FILE" >/dev/null 2>&1; then
             echo "::endgroup::"
-            echo "::error::Unable to collect SSH host key from backup server"
+            echo "::error::SSH_KNOWN_HOSTS does not look like a valid known_hosts file"
             exit 1
           fi
 
-          chmod 600 "$KNOWN_HOSTS_FILE"
-          echo "SSH host key collected."
+          echo "Pinned SSH known_hosts file installed."
+          echo "StrictHostKeyChecking is enabled."
           echo "::endgroup::"
 
           TAG="${RELEASE_PREFIX}-${STAMP}"
@@ -278,6 +338,9 @@ jobs:
 
           echo "::group::Manifest and checksums"
           echo "Creating manifest: $MANIFEST_NAME"
+          echo "Creating release notes."
+
+          export NOTES_PATH
 
           python3 - <<'PY'
           import json
@@ -294,48 +357,153 @@ jobs:
 
           mode = os.environ["MODE"]
           backup_file = os.environ["BACKUP_FILE"]
-
-          if mode == "single-file":
-              restore_commands = [
-                  f"age -d -i backup-key.txt < {backup_file} > backup.processed"
-              ]
-          else:
-              restore_commands = [
-                  f"cat {backup_file}.part-* > {backup_file}",
-                  f"age -d -i backup-key.txt < {backup_file} > backup.processed"
-              ]
+          backup_name = os.environ["BACKUP_NAME"]
+          stamp = os.environ["STAMP"]
+          total_size_bytes = os.environ["TOTAL_SIZE_BYTES"]
+          original_sha256 = os.environ["ORIGINAL_SHA256"]
+          manifest_name = os.environ["MANIFEST_NAME"]
+          checksums_name = os.environ["CHECKSUMS_NAME"]
+          part_count = os.environ["PART_COUNT"]
 
           manifest = {
               "schema": "mysql-crypto-backup-manifest/v1",
-              "created_at_utc": os.environ["STAMP"],
+              "created_at_utc": stamp,
               "tag": os.environ["TAG"],
-              "backup_name": os.environ["BACKUP_NAME"],
+              "backup_name": backup_name,
               "mode": mode,
               "encrypted_backup": {
                   "assembled_filename": backup_file,
-                  "size_bytes": int(os.environ["TOTAL_SIZE_BYTES"]),
-                  "sha256": os.environ["ORIGINAL_SHA256"],
+                  "size_bytes": int(total_size_bytes),
+                  "sha256": original_sha256,
                   "split_size_bytes": (
                       int(os.environ["SPLIT_SIZE_BYTES"])
                       if mode == "split"
                       else None
                   ),
-                  "part_count": int(os.environ["PART_COUNT"]),
+                  "part_count": int(part_count),
                   "assets": backup_assets
               },
               "metadata_assets": {
-                  "manifest": os.environ["MANIFEST_NAME"],
-                  "checksums": os.environ["CHECKSUMS_NAME"]
+                  "manifest": manifest_name,
+                  "checksums": checksums_name
               },
-              "restore": {
-                  "output_after_age_decrypt": "backup.processed",
-                  "commands": restore_commands
+              "notes": {
+                  "decrypted_output": "The decrypted file is the exact output of the server-side PROCESS_COMMAND.",
+                  "processing_command_is_user_configurable": True
               }
           }
 
           with open(os.environ["MANIFEST_PATH"], "w", encoding="utf-8") as f:
               json.dump(manifest, f, indent=2)
               f.write("\n")
+
+          if mode == "single-file":
+              notes_lines = [
+                  "# Encrypted MySQL backup",
+                  "",
+                  f"* Backup name: `{backup_name}`",
+                  f"* Created at: `{stamp}` UTC",
+                  "* Mode: `single-file`",
+                  f"* Encrypted backup asset: `{backup_file}`",
+                  f"* Encrypted size: `{total_size_bytes}` bytes",
+                  f"* SHA256 of encrypted backup: `{original_sha256}`",
+                  f"* Manifest: `{manifest_name}`",
+                  f"* Checksums: `{checksums_name}`",
+                  "",
+                  "## Restore",
+                  "",
+                  "Download these release assets into the same directory:",
+                  "",
+                  f"* `{backup_file}`",
+                  f"* `{manifest_name}`",
+                  f"* `{checksums_name}`",
+                  "",
+                  "Verify downloaded assets:",
+                  "",
+                  "```sh",
+                  f"sha256sum -c {checksums_name}",
+                  "```",
+                  "",
+                  "Verify the encrypted backup file:",
+                  "",
+                  "```sh",
+                  f"printf '%s  %s\\n' '{original_sha256}' '{backup_file}' | sha256sum -c -",
+                  "```",
+                  "",
+                  "Decrypt the encrypted backup:",
+                  "",
+                  "```sh",
+                  f"age -d -i backup-key.txt < {backup_file} > backup.processed",
+                  "```",
+                  "",
+                  "The decrypted `backup.processed` file is the exact output of the server-side `PROCESS_COMMAND` configured during setup.",
+                  "",
+                  "If you used the default `PROCESS_COMMAND='zstd -19'`, decompress it with:",
+                  "",
+                  "```sh",
+                  "zstd -d -c backup.processed > backup.sql",
+                  "```",
+                  "",
+                  "Then inspect and restore the SQL dump according to your MySQL restore procedure. With the default dump command, the dump is created with `mysqldump --databases`, so it contains database-selection statements.",
+              ]
+          else:
+              notes_lines = [
+                  "# Encrypted MySQL backup",
+                  "",
+                  f"* Backup name: `{backup_name}`",
+                  f"* Created at: `{stamp}` UTC",
+                  "* Mode: `split`",
+                  f"* Encrypted backup filename after assembly: `{backup_file}`",
+                  f"* Part count: `{part_count}`",
+                  f"* Encrypted size after assembly: `{total_size_bytes}` bytes",
+                  f"* SHA256 of assembled encrypted backup: `{original_sha256}`",
+                  f"* Manifest: `{manifest_name}`",
+                  f"* Checksums: `{checksums_name}`",
+                  "",
+                  "## Restore",
+                  "",
+                  f"Download all `{backup_file}.part-*` assets, plus:",
+                  "",
+                  f"* `{manifest_name}`",
+                  f"* `{checksums_name}`",
+                  "",
+                  "Verify downloaded assets:",
+                  "",
+                  "```sh",
+                  f"sha256sum -c {checksums_name}",
+                  "```",
+                  "",
+                  "Reassemble the encrypted backup:",
+                  "",
+                  "```sh",
+                  f"cat {backup_file}.part-* > {backup_file}",
+                  "```",
+                  "",
+                  "Verify the assembled encrypted backup:",
+                  "",
+                  "```sh",
+                  f"printf '%s  %s\\n' '{original_sha256}' '{backup_file}' | sha256sum -c -",
+                  "```",
+                  "",
+                  "Decrypt the encrypted backup:",
+                  "",
+                  "```sh",
+                  f"age -d -i backup-key.txt < {backup_file} > backup.processed",
+                  "```",
+                  "",
+                  "The decrypted `backup.processed` file is the exact output of the server-side `PROCESS_COMMAND` configured during setup.",
+                  "",
+                  "If you used the default `PROCESS_COMMAND='zstd -19'`, decompress it with:",
+                  "",
+                  "```sh",
+                  "zstd -d -c backup.processed > backup.sql",
+                  "```",
+                  "",
+                  "Then inspect and restore the SQL dump according to your MySQL restore procedure. With the default dump command, the dump is created with `mysqldump --databases`, so it contains database-selection statements.",
+              ]
+
+          notes = "\n".join(notes_lines) + "\n"
+          Path(os.environ["NOTES_PATH"]).write_text(notes, encoding="utf-8")
           PY
 
           TMP_CHECKSUMS="$WORKDIR/checksums.tmp"
@@ -352,50 +520,6 @@ jobs:
           ) > "$TMP_CHECKSUMS"
 
           mv "$TMP_CHECKSUMS" "$CHECKSUMS_PATH"
-
-          echo "Creating release notes."
-
-          {
-            echo "# Encrypted MySQL backup"
-            echo
-            echo "* Backup name: \`$BACKUP_NAME\`"
-            echo "* Created at: \`$STAMP\` UTC"
-            echo "* Mode: \`$MODE\`"
-            echo "* Encrypted size: \`$TOTAL_SIZE_BYTES\` bytes"
-            echo "* SHA256 of assembled encrypted backup: \`$ORIGINAL_SHA256\`"
-            echo "* Manifest: \`$MANIFEST_NAME\`"
-            echo "* Checksums: \`$CHECKSUMS_NAME\`"
-            echo
-
-            if [ "$MODE" = "single-file" ]; then
-              echo "## Restore assembly"
-              echo
-              echo "This backup is stored as a single encrypted file:"
-              echo
-              echo "\`\`\`sh"
-              echo "age -d -i backup-key.txt < $BACKUP_FILE > backup.processed"
-              echo "\`\`\`"
-            else
-              echo "## Restore assembly"
-              echo
-              echo "This backup is split into $PART_COUNT encrypted parts."
-              echo
-              echo "Reassemble the encrypted backup first:"
-              echo
-              echo "\`\`\`sh"
-              echo "cat ${BACKUP_FILE}.part-* > $BACKUP_FILE"
-              echo "\`\`\`"
-              echo
-              echo "Then decrypt it:"
-              echo
-              echo "\`\`\`sh"
-              echo "age -d -i backup-key.txt < $BACKUP_FILE > backup.processed"
-              echo "\`\`\`"
-            fi
-
-            echo
-            echo "The decrypted \`backup.processed\` file is the output of the server-side processing command configured during setup."
-          } > "$NOTES_PATH"
 
           echo "Manifest, checksums, and release notes created."
           echo "::endgroup::"
