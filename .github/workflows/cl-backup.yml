@@ -3,7 +3,6 @@ name: Cleanup backup releases
 on:
   workflow_dispatch:
   schedule:
-    # Runs daily at 04:00 UTC, after the default backup schedule.
     - cron: "0 16 * * *"
   workflow_run:
     workflows:
