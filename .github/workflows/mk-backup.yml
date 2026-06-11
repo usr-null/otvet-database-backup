@@ -3,8 +3,6 @@ name: Encrypted MySQL backup
 on:
   workflow_dispatch:
   schedule:
-    # Runs daily at 03:00 UTC.
-    # Change this cron expression if you need a different backup schedule.
     - cron: "0 12 * * *"
 
 permissions:
