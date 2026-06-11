@@ -2,25 +2,14 @@
 
 Automated encrypted MySQL backups using GitHub Actions.
 
-`mysql-crypto-backup` provides a simple process for creating off-site MySQL database backups with GitHub Actions. Backups are created and processed on the server, encrypted with [`age`](https://github.com/FiloSottile/age), and only then transferred to GitHub.
+`mysql-crypto-backup` creates off-site MySQL backups by running the dump on the database server, processing it locally, encrypting it with [`age`](https://github.com/FiloSottile/age), and only then transferring the encrypted result to GitHub.
 
-Because encryption happens before any database data leaves the server, encrypted backups can be stored in a public repository without exposing database contents.
-
-The project combines strong end-to-end encryption with GitHub's free infrastructure for public repositories, making it possible to build a low-cost, automated, and privacy-preserving backup workflow without maintaining dedicated backup servers or paid cloud storage.
-
-Backups are stored as GitHub Release assets and are automatically split into multiple files when necessary. This avoids GitHub's per-asset release limit while allowing large backup histories to be retained using GitHub's release storage infrastructure.
-
-If the processed backup is larger than the available disk space on the GitHub Actions runner, the workflow exits with an error and writes a clear failure message to the logs. If the backup is split successfully but would require more release assets than GitHub allows in a single release, the workflow also exits with an error and writes a clear failure message to the logs. Backups are not automatically split across multiple GitHub Releases.
-
-> [!IMPORTANT]
-> If the private `age` key is lost, backups become unrecoverable.
->
-> If the private `age` key is leaked, all backups encrypted with the corresponding public key should be considered compromised. Generate a new key pair and rotate `AGE_PUBLIC_KEY` immediately.
+Because encryption happens before any database data leaves the server, backups can be stored as GitHub Release assets, including in public repositories, without exposing database contents.
 
 ## Features
 
 * End-to-end encryption using `age`
-* Automated GitHub Actions backups
+* Automated backups through GitHub Actions
 * Forced-command SSH backup account
 * Database-specific MySQL permissions
 * Configurable Linux backup user
@@ -31,11 +20,50 @@ If the processed backup is larger than the available disk space on the GitHub Ac
 * Configurable MySQL character set
 * Configurable processing/compression pipeline
 * GitHub Release asset storage
-* Automatic backup file splitting for GitHub's per-asset release limit
-* Explicit failure when the processed backup does not fit on the runner disk
-* Explicit failure when a backup exceeds the single-release asset count limit
+* Automatic splitting for GitHub's per-asset release limit
+* Explicit failure for oversized backups instead of silent partial uploads
 * Public-repository friendly
 * No dedicated backup infrastructure required
+
+## Guarantees and limitations
+
+### Security guarantees
+
+* Database contents are encrypted before leaving the backup server.
+* GitHub Actions never receives plaintext database data.
+* GitHub stores only encrypted backup assets.
+* The SSH account is restricted to a single forced command.
+* The Linux backup user has password-based login locked.
+* The MySQL user is created specifically for backup operations.
+* MySQL access is scoped to the selected database and host pattern.
+* The MySQL backup password is passed to the backup command through standard input.
+* The private `age` key is not required on the server or in GitHub Actions.
+
+> [!IMPORTANT]
+> If the private `age` key is lost, backups become unrecoverable.
+>
+> If the private `age` key is leaked, all backups encrypted with the corresponding public key should be considered compromised. Generate a new key pair and rotate `AGE_PUBLIC_KEY` immediately.
+
+### GitHub Release asset limits
+
+Backups are uploaded as GitHub Release assets.
+
+Each release asset must be smaller than 2 GiB. When the encrypted backup is larger than the per-asset limit, the workflow attempts to split it into multiple smaller assets before upload.
+
+A single GitHub Release can contain up to 1000 assets. This gives a practical single-release capacity of slightly less than 2000 GiB when a backup is split into release assets.
+
+The workflow stores one backup in one GitHub Release. It does not automatically distribute a single backup across multiple releases.
+
+### Failure behavior
+
+The workflow fails explicitly and writes an error to the logs when:
+
+* the encrypted and processed backup is larger than the available disk space on the GitHub Actions runner;
+* the backup would require more release assets than GitHub allows in a single release.
+
+The workflow does not silently skip oversized backups and does not report partial backup uploads as successful.
+
+On public GitHub-hosted runners, the single-release asset count limit is unlikely to be reached in practice because runner disk space is much smaller than the practical single-release capacity. The condition is still handled explicitly.
 
 ## How it works
 
@@ -50,22 +78,6 @@ If the processed backup is larger than the available disk space on the GitHub Ac
 9. GitHub Actions uploads the encrypted backup assets to a GitHub Release.
 
 At no point does GitHub receive unencrypted database contents.
-
-## GitHub Release storage behavior
-
-Backups are uploaded as GitHub Release assets.
-
-Each release asset must be smaller than 2 GiB. When the encrypted backup is larger than the per-asset limit, the workflow attempts to split it into multiple smaller assets before upload.
-
-A single GitHub Release can contain up to 1000 assets. This gives a practical single-release capacity of slightly less than 2000 GiB when a backup is split into release assets.
-
-The workflow currently stores one backup in one GitHub Release. It does not automatically distribute a single backup across multiple releases.
-
-If the encrypted and processed backup is larger than the available disk space on the GitHub Actions runner, the workflow stops and reports an error in the logs.
-
-If the encrypted backup is split successfully but requires more than the allowed number of assets for one GitHub Release, the workflow stops and reports an error in the logs.
-
-This limit is unlikely to be reached on public GitHub-hosted runners because their available disk space is much smaller than the practical single-release asset capacity, but the case is handled explicitly.
 
 ## Requirements
 
@@ -95,7 +107,7 @@ rm -rf age age.tar.gz
 
 ## Setup process
 
-Before running the setup script, define the values that will be used by the backup environment.
+Before running `setup.sh`, define the backup server, database, keys, and GitHub Actions secrets.
 
 ### 1. Define backup server settings
 
@@ -121,7 +133,7 @@ Store this value as a GitHub repository secret if the server does not use the de
 
 #### `BACKUP_USER`
 
-Linux user that will be used for backup access.
+Linux user used for SSH backup access.
 
 Default:
 
@@ -163,7 +175,7 @@ Name of the MySQL database to back up.
 
 #### `MYSQL_USER`
 
-MySQL user that will be created or updated for backup operations.
+MySQL user created or updated for backup operations.
 
 Default:
 
@@ -175,9 +187,7 @@ backup
 
 Password for the MySQL backup user.
 
-Store this value as a GitHub repository secret.
-
-The setup script uses this value to create or update the MySQL backup user. The GitHub Actions workflow later passes the same password to the backup command through standard input.
+Pass this value to `setup.sh` and store the same value as a GitHub repository secret. The setup script uses it to create or update the MySQL backup user. The GitHub Actions workflow later passes it to the backup command through standard input.
 
 #### `MYSQL_HOST_PATTERN`
 
@@ -221,13 +231,11 @@ Default:
 mysql
 ```
 
-Example for systems where MySQL administration requires `sudo`:
+Examples:
 
 ```text
 sudo mysql
 ```
-
-Example for a TCP connection:
 
 ```text
 mysql --host 127.0.0.1 --port 3306 --user root -p
@@ -283,17 +291,9 @@ Generate an `age` key pair on your local machine:
 age-keygen -o backup-key.txt
 ```
 
-Keep `backup-key.txt` private. It is required to decrypt backups.
+Pass the public key to `setup.sh` as `AGE_PUBLIC_KEY`.
 
-The public key will look similar to:
-
-```text
-age1...
-```
-
-Pass the public key to the setup script as `AGE_PUBLIC_KEY`.
-
-Store the private key securely, separately from the repository. Prefer keeping an offline copy. If the private key is lost, existing backups cannot be decrypted.
+Keep the private key securely, separately from the repository. Prefer keeping an offline copy. If it is lost, existing backups cannot be decrypted.
 
 Do not store the private `age` key in GitHub repository secrets.
 
@@ -305,25 +305,13 @@ Generate an SSH key pair for GitHub Actions backup access:
 ssh-keygen -t ed25519 -f id_ed25519_backup
 ```
 
-Pass the public SSH key to the setup script as `SSH_PUBLIC_KEY`.
+Pass the public SSH key to `setup.sh` as `SSH_PUBLIC_KEY`.
 
-Store the private SSH key as a GitHub repository secret.
+Store the private SSH key as the `SSH_PRIVATE_KEY` GitHub repository secret. The GitHub Actions workflow uses it to connect to the backup server.
 
-The GitHub Actions workflow uses this private key to connect to the backup server.
+### 7. Create GitHub Actions secrets
 
-### 7. Generate the MySQL backup password
-
-Generate a password for the MySQL backup user.
-
-Pass this password to the setup script as `MYSQL_PASSWORD`.
-
-Store the same password as a GitHub repository secret.
-
-The GitHub Actions workflow sends this password to the backup command through standard input.
-
-## GitHub Actions secrets
-
-The GitHub Actions workflow requires the following repository secrets:
+The GitHub Actions workflow requires these repository secrets:
 
 | Secret            | Required | Description                                                                 |
 | ----------------- | -------: | --------------------------------------------------------------------------- |
@@ -334,9 +322,11 @@ The GitHub Actions workflow requires the following repository secrets:
 
 The SSH private key and MySQL password must never be committed to the repository.
 
-## Basic installation
+## Installation
 
-Run the setup script on the MySQL server as `root`:
+Run the setup script on the MySQL server as `root`.
+
+### Basic installation
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/your-name/your-fork/refs/heads/main/setup.sh -o setup.sh
@@ -351,21 +341,9 @@ MYSQL_PASSWORD='strong-backup-password' \
 rm setup.sh
 ```
 
-The setup script will:
+### Advanced installation
 
-* create or update the Linux backup user;
-* configure the backup user's home directory;
-* lock password-based login for the backup user;
-* install the forced SSH command;
-* install the backup command;
-* create or update the MySQL backup user;
-* grant backup permissions for the selected database;
-* grant the required global `RELOAD` permission;
-* print `OK` after successful completion.
-
-## Advanced installation
-
-All configurable values can be supplied through environment variables.
+All configurable setup values can be supplied through environment variables:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/your-name/your-fork/refs/heads/main/setup.sh -o setup.sh
@@ -389,9 +367,23 @@ PROCESS_COMMAND='zstd -19' \
 rm setup.sh
 ```
 
+The setup script will:
+
+* create or update the Linux backup user;
+* configure the backup user's home directory;
+* lock password-based login for the backup user;
+* install the forced SSH command;
+* install the backup command;
+* create or update the MySQL backup user;
+* grant backup permissions for the selected database;
+* grant the required global `RELOAD` permission;
+* print `OK` after successful completion.
+
+## Common configuration examples
+
 ### Docker-oriented MySQL host pattern
 
-For deployments where the MySQL connection originates from a Docker network, set the MySQL host pattern explicitly:
+For deployments where the MySQL connection originates from a Docker network:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/your-name/your-fork/refs/heads/main/setup.sh -o setup.sh
@@ -409,7 +401,7 @@ rm setup.sh
 
 ### Custom MySQL administration command
 
-Some systems require a custom command for MySQL administration:
+For systems where MySQL administration requires a custom command:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/your-name/your-fork/refs/heads/main/setup.sh -o setup.sh
@@ -427,7 +419,7 @@ rm setup.sh
 
 ### Custom dump command
 
-Use `MYSQLDUMP_CMD` when `mysqldump` requires additional connection options:
+For `mysqldump` with additional connection options:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/your-name/your-fork/refs/heads/main/setup.sh -o setup.sh
@@ -445,7 +437,7 @@ rm setup.sh
 
 ### Custom processing command
 
-Use `PROCESS_COMMAND` to control how the dump stream is processed before encryption:
+For custom dump stream processing before encryption:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/your-name/your-fork/refs/heads/main/setup.sh -o setup.sh
@@ -459,6 +451,21 @@ PROCESS_COMMAND='zstd -10 -T0' \
 ./setup.sh
 
 rm setup.sh
+```
+
+## MySQL permissions
+
+The setup script grants the MySQL backup user permissions on the selected database:
+
+```sql
+GRANT SELECT, SHOW VIEW, TRIGGER, EVENT, LOCK TABLES
+ON `<DB_NAME>`.* TO '<MYSQL_USER>'@'<MYSQL_HOST_PATTERN>';
+```
+
+It also grants the global `RELOAD` permission:
+
+```sql
+GRANT RELOAD ON *.* TO '<MYSQL_USER>'@'<MYSQL_HOST_PATTERN>';
 ```
 
 ## Configuration and secrets reference
@@ -481,31 +488,3 @@ rm setup.sh
 | `MYSQL_CHARSET`      |       No | `utf8mb4`                                | `setup.sh`                 |                     No | MySQL client character set used during backup execution.         |
 | `MYSQL_ADMIN_CMD`    |       No | `mysql`                                  | `setup.sh`                 |                     No | Command used to configure MySQL users and grants.                |
 | `PROCESS_COMMAND`    |       No | `zstd -19`                               | `setup.sh`                 |                     No | Command used to process the dump stream before encryption.       |
-
-## MySQL permissions
-
-The setup script grants the MySQL backup user permissions on the selected database:
-
-```sql
-GRANT SELECT, SHOW VIEW, TRIGGER, EVENT, LOCK TABLES
-ON `<DB_NAME>`.* TO '<MYSQL_USER>'@'<MYSQL_HOST_PATTERN>';
-```
-
-It also grants the global `RELOAD` permission:
-
-```sql
-GRANT RELOAD ON *.* TO '<MYSQL_USER>'@'<MYSQL_HOST_PATTERN>';
-```
-
-## Security model
-
-* Database contents are encrypted before leaving the server.
-* GitHub never receives plaintext database data.
-* The SSH account is restricted to a single forced command.
-* The Linux backup user has password-based login locked.
-* The MySQL user is created specifically for backup operations.
-* MySQL access is scoped to the selected database and host pattern.
-* The backup password is supplied through standard input during backup execution.
-* Public repositories can be used safely because backup data is encrypted before upload.
-
-This approach combines the cost advantages of public GitHub repositories with strong cryptographic privacy guarantees.
