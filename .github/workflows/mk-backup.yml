@@ -105,6 +105,15 @@ jobs:
             exit 1
           fi
 
+          echo "Configuration validated."
+          echo "Backup user: $BACKUP_USER"
+          echo "SSH port: $SSH_PORT"
+          echo "Backup name: $BACKUP_NAME"
+          echo "Release prefix: $RELEASE_PREFIX"
+          echo "Asset prefix: $ASSET_PREFIX"
+          echo "Split size: $SPLIT_SIZE_BYTES bytes"
+          echo "Max release assets: $MAX_RELEASE_ASSETS"
+
       - name: Create encrypted backup assets
         id: backup
         shell: bash
@@ -127,22 +136,41 @@ jobs:
           printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > "$SSH_KEY_FILE"
           chmod 600 "$SSH_KEY_FILE"
 
+          echo "::group::SSH setup"
+          echo "Preparing SSH key file..."
           echo "Collecting SSH host key..."
+
           if ! ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> "$KNOWN_HOSTS_FILE" 2>/dev/null; then
+            echo "::endgroup::"
             echo "::error::Unable to collect SSH host key from backup server"
             exit 1
           fi
 
           chmod 600 "$KNOWN_HOSTS_FILE"
+          echo "SSH host key collected."
+          echo "::endgroup::"
 
           TAG="${RELEASE_PREFIX}-${STAMP}"
           RELEASE_TITLE="${BACKUP_NAME} backup ${STAMP}"
           BACKUP_FILE="${ASSET_PREFIX}-${STAMP}.age"
           PART_PREFIX="$PARTS_DIR/${BACKUP_FILE}.part-"
 
-          echo "Starting encrypted backup stream..."
+          echo "::group::Backup plan"
+          echo "Timestamp: $STAMP"
+          echo "Release tag: $TAG"
+          echo "Release title: $RELEASE_TITLE"
+          echo "Encrypted backup filename: $BACKUP_FILE"
+          echo "Split output prefix: $PART_PREFIX"
+          echo "Split size: $SPLIT_SIZE_BYTES bytes"
+          echo "Runner temporary directory: $RUNNER_TEMP"
           echo "Runner free space before backup:"
           df -h "$RUNNER_TEMP"
+          echo "::endgroup::"
+
+          echo "::group::Encrypted backup stream"
+          echo "Starting encrypted backup stream..."
+          echo "Receiving encrypted stream from backup server."
+          echo "Progress below is measured after server-side age encryption."
 
           if ! printf '%s\n' "$MYSQL_PASSWORD" \
             | ssh \
@@ -155,26 +183,42 @@ jobs:
                 -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" \
                 "${BACKUP_USER}@${SSH_HOST}" \
                 -- mysql-crypto-backup \
+            | dd bs=16M status=progress \
             | split -d -a 4 -b "$SPLIT_SIZE_BYTES" - "$PART_PREFIX"; then
 
+            echo "::endgroup::"
             echo "::error::Backup stream failed. The server command may have failed, SSH may have failed, or the runner disk may be full."
             echo "Runner free space after failure:"
             df -h "$RUNNER_TEMP"
             exit 1
           fi
 
+          echo "Encrypted backup stream completed."
+          echo "::endgroup::"
+
           PART_COUNT="$(find "$PARTS_DIR" -maxdepth 1 -type f -name "${BACKUP_FILE}.part-*" | wc -l | tr -d ' ')"
+
+          echo "::group::Split output"
+          echo "Split output parts: $PART_COUNT"
+          echo "Split size limit: $SPLIT_SIZE_BYTES bytes"
+          find "$PARTS_DIR" -maxdepth 1 -type f -name "${BACKUP_FILE}.part-*" -printf '%f %s bytes\n' | sort
+          echo "::endgroup::"
 
           if [ "$PART_COUNT" -eq 0 ]; then
             echo "::error::Backup stream produced no output"
             exit 1
           fi
 
+          echo "::group::Asset preparation"
+
           if [ "$PART_COUNT" -eq 1 ]; then
             MODE="single-file"
             ONLY_PART="$(find "$PARTS_DIR" -maxdepth 1 -type f -name "${BACKUP_FILE}.part-*")"
             mv "$ONLY_PART" "$ASSET_DIR/$BACKUP_FILE"
             UPLOAD_ASSET_COUNT=3
+
+            echo "Backup mode: single-file"
+            echo "The only split part was renamed to: $BACKUP_FILE"
           else
             MODE="split"
             while IFS= read -r -d '' part; do
@@ -182,13 +226,23 @@ jobs:
             done < <(find "$PARTS_DIR" -maxdepth 1 -type f -name "${BACKUP_FILE}.part-*" -print0 | sort -z)
 
             UPLOAD_ASSET_COUNT="$((PART_COUNT + 2))"
+
+            echo "Backup mode: split"
+            echo "Backup parts moved to asset directory."
           fi
+
+          echo "Planned release assets: $UPLOAD_ASSET_COUNT"
+          echo "Backup parts: $PART_COUNT"
+          echo "Metadata assets: 2"
+          echo "::endgroup::"
 
           if [ "$UPLOAD_ASSET_COUNT" -gt "$MAX_RELEASE_ASSETS" ]; then
             echo "::error::Backup requires $UPLOAD_ASSET_COUNT release assets, but the configured single-release limit is $MAX_RELEASE_ASSETS"
             echo "::error::This workflow does not split one backup across multiple GitHub Releases"
             exit 1
           fi
+
+          echo "::group::Size and checksum"
 
           if [ "$MODE" = "single-file" ]; then
             TOTAL_SIZE_BYTES="$(stat -c '%s' "$ASSET_DIR/$BACKUP_FILE")"
@@ -197,6 +251,10 @@ jobs:
             TOTAL_SIZE_BYTES="$(find "$ASSET_DIR" -maxdepth 1 -type f -name "${BACKUP_FILE}.part-*" -printf '%s\n' | awk '{s += $1} END {print s + 0}')"
             ORIGINAL_SHA256="$(cat "$ASSET_DIR"/"${BACKUP_FILE}".part-* | sha256sum | awk '{print $1}')"
           fi
+
+          echo "Encrypted size: $TOTAL_SIZE_BYTES bytes"
+          echo "SHA256 of assembled encrypted backup: $ORIGINAL_SHA256"
+          echo "::endgroup::"
 
           MANIFEST_NAME="${ASSET_PREFIX}-${STAMP}.manifest.json"
           CHECKSUMS_NAME="${ASSET_PREFIX}-${STAMP}.sha256"
@@ -217,6 +275,9 @@ jobs:
           export PART_COUNT
           export MANIFEST_NAME
           export CHECKSUMS_NAME
+
+          echo "::group::Manifest and checksums"
+          echo "Creating manifest: $MANIFEST_NAME"
 
           python3 - <<'PY'
           import json
@@ -279,6 +340,8 @@ jobs:
 
           TMP_CHECKSUMS="$WORKDIR/checksums.tmp"
 
+          echo "Creating checksums: $CHECKSUMS_NAME"
+
           (
             cd "$ASSET_DIR"
             find . -maxdepth 1 -type f -printf '%f\n' \
@@ -289,6 +352,8 @@ jobs:
           ) > "$TMP_CHECKSUMS"
 
           mv "$TMP_CHECKSUMS" "$CHECKSUMS_PATH"
+
+          echo "Creating release notes."
 
           {
             echo "# Encrypted MySQL backup"
@@ -332,6 +397,9 @@ jobs:
             echo "The decrypted \`backup.processed\` file is the output of the server-side processing command configured during setup."
           } > "$NOTES_PATH"
 
+          echo "Manifest, checksums, and release notes created."
+          echo "::endgroup::"
+
           FINAL_ASSET_COUNT="$(find "$ASSET_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')"
 
           if [ "$FINAL_ASSET_COUNT" -gt "$MAX_RELEASE_ASSETS" ]; then
@@ -339,8 +407,12 @@ jobs:
             exit 1
           fi
 
-          echo "Prepared assets:"
+          echo "::group::Prepared assets"
+          echo "Final release asset count: $FINAL_ASSET_COUNT"
           find "$ASSET_DIR" -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
+          echo "Runner free space after asset preparation:"
+          df -h "$RUNNER_TEMP"
+          echo "::endgroup::"
 
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "title=$RELEASE_TITLE" >> "$GITHUB_OUTPUT"
@@ -380,6 +452,8 @@ jobs:
 
           trap cleanup_incomplete_release EXIT
 
+          echo "::group::Create draft release"
+          echo "Creating draft release: $TAG"
           gh release create "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --title "$TITLE" \
@@ -387,19 +461,28 @@ jobs:
             --target "$GITHUB_SHA" \
             --draft \
             --latest=false
+          echo "Draft release created."
+          echo "::endgroup::"
 
           RELEASE_CREATED=1
 
+          echo "::group::Upload release assets"
           while IFS= read -r -d '' asset; do
             echo "Uploading $(basename "$asset")"
             gh release upload "$TAG" "$asset" \
               --repo "$GITHUB_REPOSITORY"
           done < <(find "$ASSET_DIR" -maxdepth 1 -type f -print0 | sort -z)
+          echo "All release assets uploaded."
+          echo "::endgroup::"
 
+          echo "::group::Publish release"
+          echo "Publishing release: $TAG"
           gh release edit "$TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --draft=false \
             --latest=false
+          echo "Release published."
+          echo "::endgroup::"
 
           RELEASE_PUBLISHED=1
 
