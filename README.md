@@ -249,7 +249,7 @@ Run the setup script on the MySQL server as `root`.
 ### Basic installation
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/your-name/your-fork/refs/heads/main/setup.sh -o setup.sh
+curl -fsSL https://raw.githubusercontent.com/your-name/your-fork/main/setup.sh -o setup.sh
 chmod +x setup.sh
 
 SSH_PUBLIC_KEY='ssh-ed25519 AAAA...' \
