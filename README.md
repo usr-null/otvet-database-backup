@@ -8,7 +8,9 @@ Because encryption happens before any database data leaves the server, encrypted
 
 The project combines strong end-to-end encryption with GitHub's free infrastructure for public repositories, making it possible to build a low-cost, automated, and privacy-preserving backup workflow without maintaining dedicated backup servers or paid cloud storage.
 
-Backups are stored as GitHub Release assets and are automatically split into multiple files when necessary. This avoids repository file size limitations while allowing large backup histories to be retained using GitHub's release storage infrastructure.
+Backups are stored as GitHub Release assets and are automatically split into multiple files when necessary. This avoids GitHub's per-asset release limit while allowing large backup histories to be retained using GitHub's release storage infrastructure.
+
+If the processed backup is larger than the available disk space on the GitHub Actions runner, the workflow exits with an error and writes a clear failure message to the logs. If the backup is split successfully but would require more release assets than GitHub allows in a single release, the workflow also exits with an error and writes a clear failure message to the logs. Backups are not automatically split across multiple GitHub Releases.
 
 > [!IMPORTANT]
 > If the private `age` key is lost, backups become unrecoverable.
@@ -29,7 +31,9 @@ Backups are stored as GitHub Release assets and are automatically split into mul
 * Configurable MySQL character set
 * Configurable processing/compression pipeline
 * GitHub Release asset storage
-* Automatic backup file splitting
+* Automatic backup file splitting for GitHub's per-asset release limit
+* Explicit failure when the processed backup does not fit on the runner disk
+* Explicit failure when a backup exceeds the single-release asset count limit
 * Public-repository friendly
 * No dedicated backup infrastructure required
 
@@ -41,10 +45,27 @@ Backups are stored as GitHub Release assets and are automatically split into mul
 4. `mysqldump` creates a database dump.
 5. The dump stream is processed, for example compressed with `zstd`.
 6. The processed stream is encrypted with `age`.
-7. GitHub Actions uploads the encrypted backup to a GitHub Release.
-8. Large backups are automatically split into multiple release assets when necessary.
+7. GitHub Actions stores the encrypted backup on the runner.
+8. If necessary, the encrypted backup is split into multiple release assets.
+9. GitHub Actions uploads the encrypted backup assets to a GitHub Release.
 
 At no point does GitHub receive unencrypted database contents.
+
+## GitHub Release storage behavior
+
+Backups are uploaded as GitHub Release assets.
+
+Each release asset must be smaller than 2 GiB. When the encrypted backup is larger than the per-asset limit, the workflow attempts to split it into multiple smaller assets before upload.
+
+A single GitHub Release can contain up to 1000 assets. This gives a practical single-release capacity of slightly less than 2000 GiB when a backup is split into release assets.
+
+The workflow currently stores one backup in one GitHub Release. It does not automatically distribute a single backup across multiple releases.
+
+If the encrypted and processed backup is larger than the available disk space on the GitHub Actions runner, the workflow stops and reports an error in the logs.
+
+If the encrypted backup is split successfully but requires more than the allowed number of assets for one GitHub Release, the workflow stops and reports an error in the logs.
+
+This limit is unlikely to be reached on public GitHub-hosted runners because their available disk space is much smaller than the practical single-release asset capacity, but the case is handled explicitly.
 
 ## Requirements
 
