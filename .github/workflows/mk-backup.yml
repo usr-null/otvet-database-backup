@@ -3,7 +3,7 @@ name: Encrypted MySQL backup
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 12 * * *"
+    - cron: "0 17 * * *"
   repository_dispatch:
     types: [run-backup]
 
