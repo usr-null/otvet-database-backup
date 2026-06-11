@@ -266,7 +266,7 @@ rm setup.sh
 All configurable setup values can be supplied through environment variables:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/your-name/your-fork/refs/heads/main/setup.sh -o setup.sh
+curl -fsSL https://raw.githubusercontent.com/your-name/your-fork/main/setup.sh -o setup.sh
 chmod +x setup.sh
 
 BACKUP_USER='backup' \
