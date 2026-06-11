@@ -213,7 +213,7 @@ Store the same password as the `MYSQL_PASSWORD` GitHub repository secret. GitHub
 
 ### 5. Define GitHub Actions secrets
 
-Secrets are used for sensitive values.
+Secrets are used for sensitive values and for operational metadata that you prefer not to expose.
 
 | Secret            | Required | Description                                                                                                         |
 | ----------------- | -------: | ------------------------------------------------------------------------------------------------------------------- |
@@ -221,6 +221,9 @@ Secrets are used for sensitive values.
 | `SSH_PRIVATE_KEY` |      Yes | Private SSH key corresponding to the public key passed as `SSH_PUBLIC_KEY`.                                         |
 | `MYSQL_PASSWORD`  |      Yes | Password of the MySQL backup user.                                                                                  |
 | `SSH_PORT`        |       No | SSH port of the backup server. Required only when not using port `22`. Can also be stored as a repository variable. |
+| `BACKUP_USER`     |       No | Linux user used for SSH backup access. Can also be stored as a repository variable.                                 |
+
+`SSH_PORT` and `BACKUP_USER` are not credentials, but they can be stored as secrets if you prefer to hide operational metadata. When both a secret and a variable are set for the same name, the workflow uses the secret first.
 
 The SSH private key and MySQL password must never be committed to the repository.
 
@@ -228,14 +231,14 @@ The SSH private key and MySQL password must never be committed to the repository
 
 Repository variables are used for non-sensitive workflow configuration.
 
-| Variable           | Required | Default        | Description                                                                                 |
-| ------------------ | -------: | -------------- | ------------------------------------------------------------------------------------------- |
-| `BACKUP_USER`      |       No | `backup`       | Linux user used for SSH backup access. Must match the `BACKUP_USER` used during `setup.sh`. |
-| `BACKUP_NAME`      |       No | `mysql`        | Human-readable backup name used in release titles and metadata.                             |
-| `RELEASE_PREFIX`   |       No | `mysql-backup` | Prefix used for GitHub Release tags.                                                        |
-| `ASSET_PREFIX`     |       No | `mysql-backup` | Prefix used for uploaded release asset names.                                               |
-| `SPLIT_SIZE_BYTES` |       No | `2000000000`   | Split size for release assets. Must be lower than 2 GiB.                                    |
-| `SSH_PORT`         |       No | `22`           | SSH port. Can be stored as a secret instead if preferred.                                   |
+| Variable           | Required | Default        | Description                                                                                              |
+| ------------------ | -------: | -------------- | -------------------------------------------------------------------------------------------------------- |
+| `BACKUP_USER`      |       No | `backup`       | Linux user used for SSH backup access. Must match the `BACKUP_USER` used during `setup.sh`. Secret wins. |
+| `BACKUP_NAME`      |       No | `mysql`        | Human-readable backup name used in release titles and metadata.                                          |
+| `RELEASE_PREFIX`   |       No | `mysql-backup` | Prefix used for GitHub Release tags.                                                                     |
+| `ASSET_PREFIX`     |       No | `mysql-backup` | Prefix used for uploaded release asset names.                                                            |
+| `SPLIT_SIZE_BYTES` |       No | `2000000000`   | Split size for release assets. Must be lower than 2 GiB.                                                 |
+| `SSH_PORT`         |       No | `22`           | SSH port. Can be stored as a secret instead if preferred. Secret wins.                                   |
 
 The workflow also uses GitHub's automatically generated `GITHUB_TOKEN` through `github.token`. You do not need to create a personal access token. The workflow must grant it `contents: write` permission to create releases and upload release assets.
 
@@ -325,7 +328,7 @@ env:
   MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
 
   SSH_PORT: ${{ secrets.SSH_PORT || vars.SSH_PORT || '22' }}
-  BACKUP_USER: ${{ vars.BACKUP_USER || 'backup' }}
+  BACKUP_USER: ${{ secrets.BACKUP_USER || vars.BACKUP_USER || 'backup' }}
 
   BACKUP_NAME: ${{ vars.BACKUP_NAME || 'mysql' }}
   RELEASE_PREFIX: ${{ vars.RELEASE_PREFIX || 'mysql-backup' }}
@@ -812,12 +815,12 @@ GRANT RELOAD ON *.* TO '<MYSQL_USER>'@'<MYSQL_HOST_PATTERN>';
 | Name                 | Required | Default                                  | Used by                    | Store as GitHub secret | Description                                                                                            |
 | -------------------- | -------: | ---------------------------------------- | -------------------------- | ---------------------: | ------------------------------------------------------------------------------------------------------ |
 | `SSH_HOST`           |      Yes | —                                        | GitHub Actions             |                    Yes | Hostname or IP address of the backup server.                                                           |
-| `SSH_PORT`           |       No | `22`                                     | GitHub Actions             |               Optional | SSH port of the backup server. Can be a secret or a repository variable.                               |
+| `SSH_PORT`           |       No | `22`                                     | GitHub Actions             |               Optional | SSH port of the backup server. Secret takes priority over repository variable.                         |
 | `SSH_PRIVATE_KEY`    |      Yes | —                                        | GitHub Actions             |                    Yes | Private SSH key used by GitHub Actions to connect to the backup server.                                |
 | `SSH_PUBLIC_KEY`     |      Yes | —                                        | `setup.sh`                 |                     No | Public SSH key installed for the restricted backup user.                                               |
 | `AGE_PUBLIC_KEY`     |      Yes | —                                        | `setup.sh`                 |                     No | Public `age` key used to encrypt backups.                                                              |
 | `DB_NAME`            |      Yes | —                                        | `setup.sh`                 |                     No | MySQL database name to back up.                                                                        |
-| `BACKUP_USER`        |       No | `backup`                                 | `setup.sh`, GitHub Actions |                     No | Linux user used for SSH backup access. Must match in setup and workflow.                               |
+| `BACKUP_USER`        |       No | `backup`                                 | `setup.sh`, GitHub Actions |               Optional | Linux user used for SSH backup access. Must match in setup and workflow. Secret takes priority.        |
 | `BACKUP_HOME`        |       No | `/home/$BACKUP_USER`                     | `setup.sh`                 |                     No | Home directory of the Linux backup user.                                                               |
 | `BACKUP_COMMAND`     |       No | `/usr/local/sbin/github-mysql-backup.sh` | `setup.sh`                 |                     No | Path where the forced backup command is installed.                                                     |
 | `MYSQL_USER`         |       No | `backup`                                 | `setup.sh`                 |                     No | MySQL user used for backup operations.                                                                 |
