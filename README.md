@@ -1,6 +1,6 @@
 # mysql-crypto-backup
 
-Automated encrypted MySQL backups using GitHub Actions.
+Automated encrypted and processed MySQL backups using GitHub Actions.
 
 `mysql-crypto-backup` creates off-site MySQL backups by running `mysqldump` on the database server, optionally processing the dump stream locally on that server, encrypting the resulting stream with [`age`](https://github.com/FiloSottile/age), and only then transferring the encrypted result to GitHub.
 
