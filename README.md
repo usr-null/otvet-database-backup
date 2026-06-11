@@ -52,7 +52,9 @@ Each release asset must be smaller than 2 GiB. When the encrypted backup is larg
 
 A single GitHub Release can contain up to 1000 assets. This gives a practical single-release capacity of slightly less than 2000 GiB when a backup is split into release assets.
 
-The workflow stores one backup in one GitHub Release. It does not automatically distribute a single backup across multiple releases.
+The workflow stores one backup in one GitHub Release. It does not currently distribute a single backup across multiple releases.
+
+Splitting one backup across multiple GitHub Releases is possible, but it is not implemented yet. In practice, this is unlikely to matter for public GitHub-hosted runners, because such large backups would normally exceed the available runner disk space before reaching the practical single-release asset capacity.
 
 ### Failure behavior
 
@@ -63,7 +65,7 @@ The workflow fails explicitly and writes an error to the logs when:
 
 The workflow does not silently skip oversized backups and does not report partial backup uploads as successful.
 
-On public GitHub-hosted runners, the single-release asset count limit is unlikely to be reached in practice because runner disk space is much smaller than the practical single-release capacity. The condition is still handled explicitly.
+On public GitHub-hosted runners, the single-release asset count limit is unlikely to be reached in practice because the available runner disk space is much smaller than the practical single-release capacity. Splitting one backup across multiple releases could be implemented later, but for now the workflow fails explicitly if one release is not enough.
 
 ## How it works
 
