@@ -1,0 +1,422 @@
+name: Encrypted MySQL backup
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Runs daily at 03:00 UTC.
+    # Change this cron expression if you need a different backup schedule.
+    - cron: "0 3 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: mysql-crypto-backup
+  cancel-in-progress: false
+
+env:
+  # Required secrets:
+  SSH_HOST: ${{ secrets.SSH_HOST }}
+  SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+  MYSQL_PASSWORD: ${{ secrets.MYSQL_PASSWORD }}
+
+  # Optional secret or repository variable.
+  # Secret takes priority over repository variable.
+  SSH_PORT: ${{ secrets.SSH_PORT || vars.SSH_PORT || '22' }}
+  BACKUP_USER: ${{ secrets.BACKUP_USER || vars.BACKUP_USER || 'backup' }}
+
+  # Used only for release titles and asset names.
+  BACKUP_NAME: ${{ vars.BACKUP_NAME || 'mysql' }}
+  RELEASE_PREFIX: ${{ vars.RELEASE_PREFIX || 'mysql-backup' }}
+  ASSET_PREFIX: ${{ vars.ASSET_PREFIX || 'mysql-backup' }}
+
+  # Must be lower than GitHub's per-asset release limit.
+  # Default is 2,000,000,000 bytes, safely below 2 GiB.
+  SPLIT_SIZE_BYTES: ${{ vars.SPLIT_SIZE_BYTES || '2000000000' }}
+
+  # GitHub currently allows up to 1000 assets per release.
+  MAX_RELEASE_ASSETS: "1000"
+
+jobs:
+  backup:
+    name: Create encrypted backup release
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Validate configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          require_value() {
+            local name="$1"
+            local value="${!name:-}"
+
+            if [ -z "$value" ]; then
+              echo "::error::Missing required value: $name"
+              exit 1
+            fi
+          }
+
+          require_value SSH_HOST
+          require_value SSH_PRIVATE_KEY
+          require_value MYSQL_PASSWORD
+          require_value BACKUP_USER
+          require_value BACKUP_NAME
+          require_value RELEASE_PREFIX
+          require_value ASSET_PREFIX
+          require_value SPLIT_SIZE_BYTES
+          require_value MAX_RELEASE_ASSETS
+
+          case "$SSH_PORT" in
+            ''|*[!0-9]*)
+              echo "::error::SSH_PORT must be numeric"
+              exit 1
+              ;;
+          esac
+
+          case "$SPLIT_SIZE_BYTES" in
+            ''|*[!0-9]*)
+              echo "::error::SPLIT_SIZE_BYTES must be numeric"
+              exit 1
+              ;;
+          esac
+
+          case "$MAX_RELEASE_ASSETS" in
+            ''|*[!0-9]*)
+              echo "::error::MAX_RELEASE_ASSETS must be numeric"
+              exit 1
+              ;;
+          esac
+
+          if [ "$SPLIT_SIZE_BYTES" -le 0 ]; then
+            echo "::error::SPLIT_SIZE_BYTES must be greater than zero"
+            exit 1
+          fi
+
+          if [ "$SPLIT_SIZE_BYTES" -ge 2147483648 ]; then
+            echo "::error::SPLIT_SIZE_BYTES must be lower than 2 GiB"
+            exit 1
+          fi
+
+          if [ "$MAX_RELEASE_ASSETS" -le 2 ]; then
+            echo "::error::MAX_RELEASE_ASSETS must be greater than 2 because manifest and checksum assets are also uploaded"
+            exit 1
+          fi
+
+      - name: Create encrypted backup assets
+        id: backup
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+
+          STAMP="$(date -u '+%Y%m%dT%H%M%SZ')"
+
+          WORKDIR="$RUNNER_TEMP/mysql-crypto-backup"
+          SSH_DIR="$WORKDIR/ssh"
+          PARTS_DIR="$WORKDIR/parts"
+          ASSET_DIR="$WORKDIR/assets"
+
+          mkdir -p "$SSH_DIR" "$PARTS_DIR" "$ASSET_DIR"
+          chmod 700 "$SSH_DIR"
+
+          SSH_KEY_FILE="$SSH_DIR/id_ed25519_backup"
+          KNOWN_HOSTS_FILE="$SSH_DIR/known_hosts"
+
+          printf '%s\n' "$SSH_PRIVATE_KEY" | tr -d '\r' > "$SSH_KEY_FILE"
+          chmod 600 "$SSH_KEY_FILE"
+
+          echo "Collecting SSH host key..."
+          if ! ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> "$KNOWN_HOSTS_FILE" 2>/dev/null; then
+            echo "::error::Unable to collect SSH host key from backup server"
+            exit 1
+          fi
+
+          chmod 600 "$KNOWN_HOSTS_FILE"
+
+          TAG="${RELEASE_PREFIX}-${STAMP}"
+          RELEASE_TITLE="${BACKUP_NAME} backup ${STAMP}"
+          BACKUP_FILE="${ASSET_PREFIX}-${STAMP}.age"
+          PART_PREFIX="$PARTS_DIR/${BACKUP_FILE}.part-"
+
+          echo "Starting encrypted backup stream..."
+          echo "Runner free space before backup:"
+          df -h "$RUNNER_TEMP"
+
+          if ! printf '%s\n' "$MYSQL_PASSWORD" \
+            | ssh \
+                -T \
+                -p "$SSH_PORT" \
+                -i "$SSH_KEY_FILE" \
+                -o BatchMode=yes \
+                -o IdentitiesOnly=yes \
+                -o StrictHostKeyChecking=yes \
+                -o UserKnownHostsFile="$KNOWN_HOSTS_FILE" \
+                "${BACKUP_USER}@${SSH_HOST}" \
+                -- mysql-crypto-backup \
+            | split -d -a 4 -b "$SPLIT_SIZE_BYTES" - "$PART_PREFIX"; then
+
+            echo "::error::Backup stream failed. The server command may have failed, SSH may have failed, or the runner disk may be full."
+            echo "Runner free space after failure:"
+            df -h "$RUNNER_TEMP"
+            exit 1
+          fi
+
+          PART_COUNT="$(find "$PARTS_DIR" -maxdepth 1 -type f -name "${BACKUP_FILE}.part-*" | wc -l | tr -d ' ')"
+
+          if [ "$PART_COUNT" -eq 0 ]; then
+            echo "::error::Backup stream produced no output"
+            exit 1
+          fi
+
+          if [ "$PART_COUNT" -eq 1 ]; then
+            MODE="single-file"
+            ONLY_PART="$(find "$PARTS_DIR" -maxdepth 1 -type f -name "${BACKUP_FILE}.part-*")"
+            mv "$ONLY_PART" "$ASSET_DIR/$BACKUP_FILE"
+            UPLOAD_ASSET_COUNT=3
+          else
+            MODE="split"
+            while IFS= read -r -d '' part; do
+              mv "$part" "$ASSET_DIR/$(basename "$part")"
+            done < <(find "$PARTS_DIR" -maxdepth 1 -type f -name "${BACKUP_FILE}.part-*" -print0 | sort -z)
+
+            UPLOAD_ASSET_COUNT="$((PART_COUNT + 2))"
+          fi
+
+          if [ "$UPLOAD_ASSET_COUNT" -gt "$MAX_RELEASE_ASSETS" ]; then
+            echo "::error::Backup requires $UPLOAD_ASSET_COUNT release assets, but the configured single-release limit is $MAX_RELEASE_ASSETS"
+            echo "::error::This workflow does not split one backup across multiple GitHub Releases"
+            exit 1
+          fi
+
+          if [ "$MODE" = "single-file" ]; then
+            TOTAL_SIZE_BYTES="$(stat -c '%s' "$ASSET_DIR/$BACKUP_FILE")"
+            ORIGINAL_SHA256="$(sha256sum "$ASSET_DIR/$BACKUP_FILE" | awk '{print $1}')"
+          else
+            TOTAL_SIZE_BYTES="$(find "$ASSET_DIR" -maxdepth 1 -type f -name "${BACKUP_FILE}.part-*" -printf '%s\n' | awk '{s += $1} END {print s + 0}')"
+            ORIGINAL_SHA256="$(cat "$ASSET_DIR"/"${BACKUP_FILE}".part-* | sha256sum | awk '{print $1}')"
+          fi
+
+          MANIFEST_NAME="${ASSET_PREFIX}-${STAMP}.manifest.json"
+          CHECKSUMS_NAME="${ASSET_PREFIX}-${STAMP}.sha256"
+          MANIFEST_PATH="$ASSET_DIR/$MANIFEST_NAME"
+          CHECKSUMS_PATH="$ASSET_DIR/$CHECKSUMS_NAME"
+          NOTES_PATH="$WORKDIR/release-notes.md"
+
+          export ASSET_DIR
+          export MANIFEST_PATH
+          export MODE
+          export STAMP
+          export TAG
+          export BACKUP_NAME
+          export BACKUP_FILE
+          export SPLIT_SIZE_BYTES
+          export TOTAL_SIZE_BYTES
+          export ORIGINAL_SHA256
+          export PART_COUNT
+          export MANIFEST_NAME
+          export CHECKSUMS_NAME
+
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          asset_dir = Path(os.environ["ASSET_DIR"])
+
+          backup_assets = sorted(
+              p.name
+              for p in asset_dir.iterdir()
+              if p.is_file()
+          )
+
+          mode = os.environ["MODE"]
+          backup_file = os.environ["BACKUP_FILE"]
+
+          if mode == "single-file":
+              restore_commands = [
+                  f"age -d -i backup-key.txt < {backup_file} > backup.processed"
+              ]
+          else:
+              restore_commands = [
+                  f"cat {backup_file}.part-* > {backup_file}",
+                  f"age -d -i backup-key.txt < {backup_file} > backup.processed"
+              ]
+
+          manifest = {
+              "schema": "mysql-crypto-backup-manifest/v1",
+              "created_at_utc": os.environ["STAMP"],
+              "tag": os.environ["TAG"],
+              "backup_name": os.environ["BACKUP_NAME"],
+              "mode": mode,
+              "encrypted_backup": {
+                  "assembled_filename": backup_file,
+                  "size_bytes": int(os.environ["TOTAL_SIZE_BYTES"]),
+                  "sha256": os.environ["ORIGINAL_SHA256"],
+                  "split_size_bytes": (
+                      int(os.environ["SPLIT_SIZE_BYTES"])
+                      if mode == "split"
+                      else None
+                  ),
+                  "part_count": int(os.environ["PART_COUNT"]),
+                  "assets": backup_assets
+              },
+              "metadata_assets": {
+                  "manifest": os.environ["MANIFEST_NAME"],
+                  "checksums": os.environ["CHECKSUMS_NAME"]
+              },
+              "restore": {
+                  "output_after_age_decrypt": "backup.processed",
+                  "commands": restore_commands
+              }
+          }
+
+          with open(os.environ["MANIFEST_PATH"], "w", encoding="utf-8") as f:
+              json.dump(manifest, f, indent=2)
+              f.write("\n")
+          PY
+
+          TMP_CHECKSUMS="$WORKDIR/checksums.tmp"
+
+          (
+            cd "$ASSET_DIR"
+            find . -maxdepth 1 -type f -printf '%f\n' \
+              | sort \
+              | while IFS= read -r file; do
+                  sha256sum "$file"
+                done
+          ) > "$TMP_CHECKSUMS"
+
+          mv "$TMP_CHECKSUMS" "$CHECKSUMS_PATH"
+
+          {
+            echo "# Encrypted MySQL backup"
+            echo
+            echo "* Backup name: \`$BACKUP_NAME\`"
+            echo "* Created at: \`$STAMP\` UTC"
+            echo "* Mode: \`$MODE\`"
+            echo "* Encrypted size: \`$TOTAL_SIZE_BYTES\` bytes"
+            echo "* SHA256 of assembled encrypted backup: \`$ORIGINAL_SHA256\`"
+            echo "* Manifest: \`$MANIFEST_NAME\`"
+            echo "* Checksums: \`$CHECKSUMS_NAME\`"
+            echo
+
+            if [ "$MODE" = "single-file" ]; then
+              echo "## Restore assembly"
+              echo
+              echo "This backup is stored as a single encrypted file:"
+              echo
+              echo "\`\`\`sh"
+              echo "age -d -i backup-key.txt < $BACKUP_FILE > backup.processed"
+              echo "\`\`\`"
+            else
+              echo "## Restore assembly"
+              echo
+              echo "This backup is split into $PART_COUNT encrypted parts."
+              echo
+              echo "Reassemble the encrypted backup first:"
+              echo
+              echo "\`\`\`sh"
+              echo "cat ${BACKUP_FILE}.part-* > $BACKUP_FILE"
+              echo "\`\`\`"
+              echo
+              echo "Then decrypt it:"
+              echo
+              echo "\`\`\`sh"
+              echo "age -d -i backup-key.txt < $BACKUP_FILE > backup.processed"
+              echo "\`\`\`"
+            fi
+
+            echo
+            echo "The decrypted \`backup.processed\` file is the output of the server-side processing command configured during setup."
+          } > "$NOTES_PATH"
+
+          FINAL_ASSET_COUNT="$(find "$ASSET_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')"
+
+          if [ "$FINAL_ASSET_COUNT" -gt "$MAX_RELEASE_ASSETS" ]; then
+            echo "::error::Prepared $FINAL_ASSET_COUNT assets, but the configured single-release limit is $MAX_RELEASE_ASSETS"
+            exit 1
+          fi
+
+          echo "Prepared assets:"
+          find "$ASSET_DIR" -maxdepth 1 -type f -printf '%f %s bytes\n' | sort
+
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "title=$RELEASE_TITLE" >> "$GITHUB_OUTPUT"
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "part_count=$PART_COUNT" >> "$GITHUB_OUTPUT"
+          echo "asset_count=$FINAL_ASSET_COUNT" >> "$GITHUB_OUTPUT"
+          echo "size_bytes=$TOTAL_SIZE_BYTES" >> "$GITHUB_OUTPUT"
+          echo "sha256=$ORIGINAL_SHA256" >> "$GITHUB_OUTPUT"
+          echo "asset_dir=$ASSET_DIR" >> "$GITHUB_OUTPUT"
+          echo "notes_path=$NOTES_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.backup.outputs.tag }}
+          TITLE: ${{ steps.backup.outputs.title }}
+          ASSET_DIR: ${{ steps.backup.outputs.asset_dir }}
+          NOTES_PATH: ${{ steps.backup.outputs.notes_path }}
+        run: |
+          set -Eeuo pipefail
+
+          RELEASE_CREATED=0
+          RELEASE_PUBLISHED=0
+
+          cleanup_incomplete_release() {
+            status="$?"
+
+            if [ "$status" -ne 0 ] && [ "$RELEASE_CREATED" -eq 1 ] && [ "$RELEASE_PUBLISHED" -eq 0 ]; then
+              echo "::warning::Deleting incomplete draft release $TAG"
+              gh release delete "$TAG" \
+                --yes \
+                --cleanup-tag \
+                --repo "$GITHUB_REPOSITORY" || true
+            fi
+          }
+
+          trap cleanup_incomplete_release EXIT
+
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$TITLE" \
+            --notes-file "$NOTES_PATH" \
+            --target "$GITHUB_SHA" \
+            --draft \
+            --latest=false
+
+          RELEASE_CREATED=1
+
+          while IFS= read -r -d '' asset; do
+            echo "Uploading $(basename "$asset")"
+            gh release upload "$TAG" "$asset" \
+              --repo "$GITHUB_REPOSITORY"
+          done < <(find "$ASSET_DIR" -maxdepth 1 -type f -print0 | sort -z)
+
+          gh release edit "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft=false \
+            --latest=false
+
+          RELEASE_PUBLISHED=1
+
+      - name: Write workflow summary
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "## Encrypted MySQL backup"
+            echo
+            echo "| Field | Value |"
+            echo "|---|---|"
+            echo "| Release tag | \`${{ steps.backup.outputs.tag }}\` |"
+            echo "| Mode | \`${{ steps.backup.outputs.mode }}\` |"
+            echo "| Part count | \`${{ steps.backup.outputs.part_count }}\` |"
+            echo "| Uploaded assets | \`${{ steps.backup.outputs.asset_count }}\` |"
+            echo "| Encrypted size | \`${{ steps.backup.outputs.size_bytes }}\` bytes |"
+            echo "| SHA256 | \`${{ steps.backup.outputs.sha256 }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
