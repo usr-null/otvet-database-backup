@@ -30,6 +30,7 @@ Because encryption happens before any database data leaves the server, backups c
 * Explicit failure for oversized backups instead of silent partial uploads
 * Public-repository friendly
 * No dedicated backup infrastructure required
+* Manual, scheduled, and external `repository_dispatch` backup triggers
 
 ## Guarantees and limitations
 
